@@ -22,17 +22,19 @@ import os
 import sys
 from collections import Counter
 from simple_salesforce import Salesforce
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Set, Optional, Tuple
 
 
 class SalesforceUserProvisioner:
     def __init__(self, org_alias: str):
         """Initialize Salesforce connection using sf CLI"""
         self.org_alias = org_alias
-        self.sf = self._get_sf_connection(org_alias)
+        self.org_info = self._get_org_info(org_alias)
+        self.sandbox_name = self._extract_sandbox_name()
+        self.sf = self._get_sf_connection()
     
-    def _get_sf_connection(self, org_alias: str):
-        """Get Salesforce connection using sf CLI"""
+    def _get_org_info(self, org_alias: str) -> Dict:
+        """Get org information using sf CLI"""
         sf_cmd = shutil.which("sf") or "sf.cmd" if os.name == 'nt' else "sf"
         
         result = subprocess.run(
@@ -48,8 +50,39 @@ class SalesforceUserProvisioner:
             sys.exit(1)
         
         org_info = json.loads(result.stdout)
-        access_token = org_info["result"]["accessToken"]
-        instance_url = org_info["result"]["instanceUrl"]
+        return org_info["result"]
+    
+    def _extract_sandbox_name(self) -> Optional[str]:
+        """Extract sandbox name from instance URL or username"""
+        instance_url = self.org_info.get("instanceUrl", "")
+        username = self.org_info.get("username", "")
+        
+        # Check if it's a sandbox by looking for "sandbox" in instance URL
+        if "sandbox" not in instance_url.lower():
+            return None
+        
+        # Extract sandbox name from instance URL: https://mavenclinic--qa.sandbox.my.salesforce.com
+        # Pattern: --sandboxname.sandbox
+        if "--" in instance_url:
+            parts = instance_url.split("--")
+            if len(parts) > 1:
+                sandbox_part = parts[1].split(".")[0]
+                return sandbox_part
+        
+        # Fallback: extract from username if it has format: user@domain.com.sandboxname
+        if "." in username and "@" in username:
+            domain_part = username.split("@")[1]
+            if "." in domain_part:
+                parts = domain_part.split(".")
+                if len(parts) > 2:  # More than just domain.com
+                    return parts[-1]  # Last part after domain
+        
+        return None
+    
+    def _get_sf_connection(self):
+        """Get Salesforce connection using stored org info"""
+        access_token = self.org_info["accessToken"]
+        instance_url = self.org_info["instanceUrl"]
         
         return Salesforce(instance_url=instance_url, session_id=access_token)
     
@@ -81,6 +114,61 @@ class SalesforceUserProvisioner:
         if result['records']:
             return result['records'][0]['Id']
         return None
+    
+    def get_user_to_mimic(self, mimic_user_email: str) -> Optional[Dict]:
+        """Get user details (profile, role, title, permission sets) to mimic"""
+        if not mimic_user_email:
+            return None
+        
+        # Handle sandbox usernames - try both with and without sandbox suffix
+        query_email = mimic_user_email
+        if self.sandbox_name and not query_email.endswith(f".{self.sandbox_name}"):
+            query_email = f"{mimic_user_email}.{self.sandbox_name}"
+        
+        # Try to find user by email or username
+        query = f"""
+        SELECT Id, FirstName, LastName, Email, Username, Profile.Name, UserRole.Name, Title
+        FROM User 
+        WHERE (Email = '{mimic_user_email}' OR Username = '{query_email}' OR Email = '{query_email}')
+        AND IsActive = true 
+        LIMIT 1
+        """
+        
+        result = self.sf.query(query)
+        if not result['records']:
+            return None
+        
+        user = result['records'][0]
+        user_id = user['Id']
+        
+        # Get permission sets assigned to this user
+        psa_query = f"""
+        SELECT PermissionSetId, PermissionSet.Name, PermissionSet.Label
+        FROM PermissionSetAssignment
+        WHERE AssigneeId = '{user_id}'
+        """
+        psa_result = self.sf.query(psa_query)
+        
+        # Get permission set groups assigned to this user
+        psg_query = f"""
+        SELECT PermissionSetGroupId, PermissionSetGroup.DeveloperName, PermissionSetGroup.MasterLabel
+        FROM PermissionSetGroupAssignment
+        WHERE AssigneeId = '{user_id}'
+        """
+        psg_result = self.sf.query(psg_query)
+        
+        permission_set_ids = [psa['PermissionSetId'] for psa in psa_result['records']]
+        permission_set_group_ids = [psg['PermissionSetGroupId'] for psg in psg_result['records']]
+        
+        return {
+            'Profile': user.get('Profile', {}).get('Name'),
+            'Role': user.get('UserRole', {}).get('Name'),
+            'Title': user.get('Title'),
+            'permission_sets': permission_set_ids,
+            'permission_set_groups': permission_set_group_ids,
+            'user_id': user_id,
+            'name': f"{user.get('FirstName', '')} {user.get('LastName', '')}".strip()
+        }
     
     def get_permission_set_groups_and_members(self) -> Dict[str, Set[str]]:
         """Get all Permission Set Groups and their member permission sets"""
@@ -208,6 +296,24 @@ class SalesforceUserProvisioner:
             'permission_set_groups': groups_to_assign,
             'permission_sets': individual_ps_to_assign
         }
+    
+    def parse_name_from_email(self, email: str) -> Tuple[str, str]:
+        """Parse first name and last name from email (firstname.lastname@domain.com format)"""
+        if not email or '@' not in email:
+            raise ValueError(f"Invalid email format: {email}")
+        
+        local_part = email.split('@')[0]
+        parts = local_part.split('.', 1)
+        
+        if len(parts) == 2:
+            first_name = parts[0].capitalize()
+            last_name = parts[1].capitalize()
+        else:
+            # Fallback: use entire local part as last name if no dot found
+            first_name = parts[0].capitalize()
+            last_name = parts[0].capitalize()
+        
+        return first_name, last_name
     
     def generate_alias(self, first_name: str, last_name: str) -> str:
         """Generate user alias (first initial + last name, max 8 chars)"""
@@ -338,12 +444,85 @@ class SalesforceUserProvisioner:
         }
         
         for i, user_data in enumerate(users, 1):
-            print(f"\n[{i}/{len(users)}] Creating user: {user_data['FirstName']} {user_data['LastName']}")
+            # Validate required fields
+            if 'Email' not in user_data or not user_data['Email']:
+                results['failed'].append({
+                    'user': user_data,
+                    'error': 'Email is required'
+                })
+                continue
             
-            # Analyze permission sets
+            email = user_data['Email'].strip()
+            
+            # Parse name from email and set username
+            try:
+                first_name, last_name = self.parse_name_from_email(email)
+                user_data['FirstName'] = first_name
+                user_data['LastName'] = last_name
+                
+                # Set username: append sandbox name if in sandbox environment
+                username = email
+                if self.sandbox_name:
+                    username = f"{email}.{self.sandbox_name}"
+                    print(f"  Sandbox detected: Appending '.{self.sandbox_name}' to username")
+                user_data['Username'] = username
+            except ValueError as e:
+                results['failed'].append({
+                    'user': user_data,
+                    'error': str(e)
+                })
+                continue
+            
+            print(f"\n[{i}/{len(users)}] Creating user: {first_name} {last_name} ({email})")
+            
+            # Check if MimicUser is provided
+            mimic_user_email = user_data.get('MimicUser', '').strip() if user_data.get('MimicUser') else None
+            permission_data = {'permission_set_groups': [], 'permission_sets': []}
+            
+            if mimic_user_email:
+                # Get user details to mimic
+                print(f"  Mimicking user: {mimic_user_email}")
+                mimic_user = self.get_user_to_mimic(mimic_user_email)
+                
+                if not mimic_user:
+                    results['failed'].append({
+                        'user': user_data,
+                        'error': f"Could not find user to mimic: {mimic_user_email}"
+                    })
+                    continue
+                
+                # Copy profile, role, and title from mimic user (unless overridden in CSV)
+                if not user_data.get('Profile'):
+                    user_data['Profile'] = mimic_user['Profile']
+                    print(f"  Using Profile from mimic user: {mimic_user['Profile']}")
+                
+                if not user_data.get('Role'):
+                    user_data['Role'] = mimic_user['Role']
+                    if mimic_user['Role']:
+                        print(f"  Using Role from mimic user: {mimic_user['Role']}")
+                
+                if not user_data.get('Title'):
+                    user_data['Title'] = mimic_user['Title'] or ''
+                    if mimic_user['Title']:
+                        print(f"  Using Title from mimic user: {mimic_user['Title']}")
+                
+                # Use permission sets directly from mimic user
+                permission_data = {
+                    'permission_set_groups': mimic_user['permission_set_groups'],
+                    'permission_sets': mimic_user['permission_sets']
+                }
+                print(f"  Copying {len(mimic_user['permission_set_groups'])} permission set groups and {len(mimic_user['permission_sets'])} permission sets from {mimic_user['name']}")
+            else:
+                # Use traditional analysis method - Profile and Role must be provided in CSV
+                if not user_data.get('Profile'):
+                    results['failed'].append({
+                        'user': user_data,
+                        'error': 'Profile is required (or provide MimicUser)'
+                    })
+                    continue
+            
+            # Verify profile exists before creating user
             profile_id = self.get_profile_id(user_data['Profile'])
-            role_id = self.get_role_id(user_data['Role']) if user_data.get('Role') else None
-            
             if not profile_id:
                 results['failed'].append({
                     'user': user_data,
@@ -351,9 +530,11 @@ class SalesforceUserProvisioner:
                 })
                 continue
             
-            permission_data = {'permission_set_groups': [], 'permission_sets': []}
-            if role_id:
-                permission_data = self.analyze_permission_sets(profile_id, role_id, permission_set_threshold)
+            # If not mimicking, analyze permission sets based on Profile + Role
+            if not mimic_user_email:
+                role_id = self.get_role_id(user_data['Role']) if user_data.get('Role') else None
+                if role_id:
+                    permission_data = self.analyze_permission_sets(profile_id, role_id, permission_set_threshold)
             
             # Create user
             user_id = self.create_user(user_data, permission_data)
@@ -379,6 +560,63 @@ class SalesforceUserProvisioner:
         return results
 
 
+def get_org_info(org_alias: str) -> Optional[Dict]:
+    """Get org information without creating a connection"""
+    sf_cmd = shutil.which("sf") or "sf.cmd" if os.name == 'nt' else "sf"
+    
+    result = subprocess.run(
+        [sf_cmd, "org", "display", "--target-org", org_alias, "--json"],
+        capture_output=True,
+        text=True,
+        shell=True
+    )
+    if result.returncode != 0:
+        return None
+    
+    try:
+        org_info = json.loads(result.stdout)
+        return org_info.get("result", {})
+    except:
+        return None
+
+
+def confirm_org(org_alias: str) -> bool:
+    """Display org information and ask for confirmation"""
+    org_info = get_org_info(org_alias)
+    
+    if not org_info:
+        print(f"ERROR: Could not retrieve information for org '{org_alias}'")
+        print(f"Make sure the org alias is correct and you're authenticated.")
+        return False
+    
+    username = org_info.get("username", "Unknown")
+    org_id = org_info.get("orgId", "Unknown")
+    instance_url = org_info.get("instanceUrl", "Unknown")
+    org_type = org_info.get("instanceType", "")
+    
+    print("\n" + "="*60)
+    print("***  CONFIRM TARGET ENVIRONMENT  ***")
+    print("="*60)
+    print(f"Org Alias:     {org_alias}")
+    print(f"Username:      {username}")
+    print(f"Org ID:        {org_id}")
+    print(f"Instance URL:  {instance_url}")
+    if org_type:
+        print(f"Org Type:      {org_type}")
+    print("="*60)
+    print()
+    
+    # Check if it's production
+    is_production = org_type.lower() == "production" or "prod" in org_alias.lower()
+    if is_production:
+        print("***  WARNING: This appears to be a PRODUCTION environment!  ***")
+        print()
+    
+    response = input("Do you want to proceed with provisioning users in this org? (yes/no): ").strip().lower()
+    
+    return response in ['yes', 'y']
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Provision Salesforce users from CSV file',
@@ -391,9 +629,12 @@ Examples:
   # Provision with custom threshold (60% instead of 50%)
   python provision_user.py --csv users.csv --org mavenprod --threshold 0.6
   
+  # Skip confirmation prompt (useful for automation)
+  python provision_user.py --csv users.csv --org mavenprod --skip-confirmation
+  
 CSV Format:
-  FirstName,LastName,Email,Username,Title,ManagerEmail,Profile,Role,TimeZone
-  John,Doe,john.doe@mavenclinic.com,john.doe@mavenclinic.com,Sales Rep,jane.manager@mavenclinic.com,Sales,Sales Rep,America/New_York
+  Email,Title,ManagerEmail,Profile,Role,TimeZone
+  john.doe@mavenclinic.com,Sales Rep,jane.manager@mavenclinic.com,Sales,Sales Rep,America/New_York
         """
     )
     parser.add_argument('--csv', required=True, help='Path to CSV file with user data')
@@ -402,6 +643,8 @@ CSV Format:
                        help='Permission set assignment threshold (0.0-1.0, default: 0.5)')
     parser.add_argument('--output', default='provisioning_results.json',
                        help='Output file for results (default: provisioning_results.json)')
+    parser.add_argument('--skip-confirmation', action='store_true',
+                       help='Skip the org confirmation prompt (useful for automation)')
     
     args = parser.parse_args()
     
@@ -417,7 +660,13 @@ CSV Format:
     print(f"Target Org: {args.org}")
     print(f"Permission Set Threshold: {args.threshold * 100}%")
     print("="*60)
-    print()
+    
+    # Confirm org unless --skip-confirmation is used
+    if not args.skip_confirmation:
+        if not confirm_org(args.org):
+            print("\nProvisioning cancelled by user.")
+            sys.exit(0)
+        print()
     
     # Initialize provisioner
     try:
@@ -441,11 +690,16 @@ CSV Format:
             print(f"  User ID: {success['userId']}")
             print(f"  Username: {success['user']['Username']}")
             print(f"  Email: {success['user']['Email']}")
+            print(f"  Name: {success['user'].get('FirstName', '')} {success['user'].get('LastName', '')}")
     
     if results['failed']:
         print("\nFAILED:")
         for failure in results['failed']:
-            print(f"  User: {failure['user'].get('FirstName', '')} {failure['user'].get('LastName', '')}")
+            email = failure['user'].get('Email', 'Unknown')
+            name = f"{failure['user'].get('FirstName', '')} {failure['user'].get('LastName', '')}".strip()
+            if not name:
+                name = email
+            print(f"  User: {name} ({email})")
             print(f"  Error: {failure.get('error', 'Unknown error')}")
 
 

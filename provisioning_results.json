@@ -1,0 +1,19 @@
+{
+  "success": [
+    {
+      "user": {
+        "Email": "jonathan.test@mavenclinic.com",
+        "Title": "",
+        "ManagerEmail": "",
+        "Profile": "Marketing",
+        "Role": "Marketing",
+        "TimeZone": "",
+        "FirstName": "Jonathan",
+        "LastName": "Test",
+        "Username": "jonathan.test@mavenclinic.com.devjtang1"
+      },
+      "userId": "005U700000QD3FoIAL"
+    }
+  ],
+  "failed": []
+}
