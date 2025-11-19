@@ -1,0 +1,5 @@
+FirstName,LastName,Email,Username,Title,ManagerEmail,Profile,Role,TimeZone
+John,Doe,john.doe@mavenclinic.com,john.doe@mavenclinic.com,Sales Rep,jane.manager@mavenclinic.com,Sales,Sales Rep,America/New_York
+Jane,Smith,jane.smith@mavenclinic.com,jane.smith@mavenclinic.com,Marketing Manager,,Marketing,Marketing Manager,America/New_York
+Bob,Johnson,bob.johnson@mavenclinic.com,bob.johnson@mavenclinic.com,Client Success Manager,,Client Success,Client Success Manager,America/New_York
+
