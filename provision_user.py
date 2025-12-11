@@ -11,6 +11,7 @@ Requirements:
     - Salesforce CLI (sf) installed and authenticated
     - Python 3.7+
     - simple-salesforce library: pip install simple-salesforce
+    - requests library: pip install requests (for Jira integration)
 """
 
 import csv
@@ -20,18 +21,279 @@ import subprocess
 import shutil
 import os
 import sys
+import requests
+import base64
 from collections import Counter
 from simple_salesforce import Salesforce
 from typing import List, Dict, Set, Optional, Tuple
 
 
+class JiraClient:
+    """Client for creating Jira tickets via REST API"""
+    
+    def __init__(self, jira_url: str, email: str, api_token: str, project_key: str, issue_type: str = "Task", 
+                 assignee_email: Optional[str] = None, board_id: Optional[int] = None):
+        """
+        Initialize Jira client
+        
+        Args:
+            jira_url: Base URL of Jira instance (e.g., https://yourcompany.atlassian.net)
+            email: Jira user email for authentication
+            api_token: Jira API token (get from https://id.atlassian.com/manage-profile/security/api-tokens)
+            project_key: Jira project key (e.g., "PROJ")
+            issue_type: Issue type (default: "Task")
+            assignee_email: Email of user to assign tickets to (optional)
+            board_id: Jira board ID for getting current sprint (optional)
+        """
+        self.jira_url = jira_url.rstrip('/')
+        self.email = email
+        self.api_token = api_token
+        self.project_key = project_key
+        self.issue_type = issue_type
+        self.assignee_email = assignee_email
+        self.board_id = board_id
+        self.auth_header = self._create_auth_header(email, api_token)
+        self._sprint_field_id = None  # Cache sprint custom field ID
+    
+    def _create_auth_header(self, email: str, api_token: str) -> str:
+        """Create Basic Auth header for Jira API"""
+        credentials = f"{email}:{api_token}"
+        encoded = base64.b64encode(credentials.encode()).decode()
+        return f"Basic {encoded}"
+    
+    def _get_assignee_account_id(self, email: str) -> Optional[str]:
+        """Get Jira account ID from email address"""
+        url = f"{self.jira_url}/rest/api/3/user/search"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": self.auth_header
+        }
+        params = {"query": email}
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            users = response.json()
+            if users and len(users) > 0:
+                return users[0].get('accountId')
+        except Exception as e:
+            print(f"  WARNING: Could not find assignee account ID for {email}: {str(e)}")
+        return None
+    
+    def _find_board_id_for_project(self) -> Optional[int]:
+        """Find the board ID for the project automatically"""
+        url = f"{self.jira_url}/rest/agile/1.0/board"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": self.auth_header
+        }
+        params = {"projectKeyOrId": self.project_key, "type": "scrum"}
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            boards = response.json().get('values', [])
+            if boards and len(boards) > 0:
+                # Return the first board found
+                return boards[0].get('id')
+        except Exception as e:
+            print(f"  WARNING: Could not find board for project: {str(e)}")
+        return None
+    
+    def _get_current_sprint_id(self) -> Optional[int]:
+        """Get the current active sprint ID from the board"""
+        board_id = self.board_id
+        if not board_id:
+            # Try to find board automatically
+            board_id = self._find_board_id_for_project()
+            if not board_id:
+                return None
+        
+        url = f"{self.jira_url}/rest/agile/1.0/board/{board_id}/sprint"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": self.auth_header
+        }
+        params = {"state": "active"}
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            sprints = response.json().get('values', [])
+            if sprints and len(sprints) > 0:
+                # Get the first active sprint
+                sprint_id = sprints[0].get('id')
+                print(f"  Found active sprint: {sprints[0].get('name', 'Unknown')} (ID: {sprint_id})")
+                return sprint_id
+        except Exception as e:
+            print(f"  WARNING: Could not get current sprint: {str(e)}")
+        return None
+    
+    def _get_sprint_custom_field_id(self) -> Optional[str]:
+        """Get the sprint custom field ID for the project"""
+        if self._sprint_field_id:
+            return self._sprint_field_id
+        
+        url = f"{self.jira_url}/rest/api/3/issue/createmeta"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": self.auth_header
+        }
+        params = {
+            "projectKeys": self.project_key,
+            "issuetypeNames": self.issue_type,
+            "expand": "projects.issuetypes.fields"
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            metadata = response.json()
+            
+            # Find sprint field (usually customfield_10020 or similar)
+            projects = metadata.get('projects', [])
+            if projects:
+                fields = projects[0].get('issuetypes', [{}])[0].get('fields', {})
+                for field_id, field_data in fields.items():
+                    if 'Sprint' in field_data.get('name', '') or field_id.startswith('customfield_10020'):
+                        self._sprint_field_id = field_id
+                        return field_id
+        except Exception as e:
+            print(f"  WARNING: Could not get sprint field ID: {str(e)}")
+        
+        # Fallback to common sprint field ID
+        self._sprint_field_id = "customfield_10020"
+        return self._sprint_field_id
+    
+    def create_ticket(self, summary: str, description: str, **kwargs) -> Optional[Dict]:
+        """
+        Create a Jira ticket
+        
+        Args:
+            summary: Ticket summary/title
+            description: Ticket description (supports ADF format dict or plain text)
+            **kwargs: Additional fields (e.g., assignee, labels, priority)
+        
+        Returns:
+            Dictionary with ticket info (key, id, url) or None if failed
+        """
+        url = f"{self.jira_url}/rest/api/3/issue"
+        
+        # Build issue payload
+        # If description is already a dict (ADF format), use it directly
+        # Otherwise, wrap plain text in ADF format
+        if isinstance(description, dict):
+            description_field = description
+        else:
+            description_field = {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": description
+                            }
+                        ]
+                    }
+                ]
+            }
+        
+        issue_data = {
+            "fields": {
+                "project": {"key": self.project_key},
+                "summary": summary,
+                "description": description_field,
+                "issuetype": {"name": self.issue_type}
+            }
+        }
+        
+        # Add optional fields
+        if 'assignee' in kwargs:
+            # assignee can be accountId (string) or email (will be converted)
+            assignee_value = kwargs['assignee']
+            if '@' in str(assignee_value):
+                # It's an email, get accountId
+                account_id = self._get_assignee_account_id(assignee_value)
+                if account_id:
+                    issue_data["fields"]["assignee"] = {"accountId": account_id}
+            else:
+                # It's already an accountId
+                issue_data["fields"]["assignee"] = {"accountId": assignee_value}
+        elif self.assignee_email:
+            # Use default assignee from config
+            account_id = self._get_assignee_account_id(self.assignee_email)
+            if account_id:
+                issue_data["fields"]["assignee"] = {"accountId": account_id}
+        
+        if 'labels' in kwargs:
+            issue_data["fields"]["labels"] = kwargs['labels']
+        if 'priority' in kwargs:
+            issue_data["fields"]["priority"] = {"name": kwargs['priority']}
+        if 'components' in kwargs:
+            issue_data["fields"]["components"] = [{"name": comp} for comp in kwargs['components']]
+        
+        # Add sprint if available
+        if 'sprint_id' in kwargs:
+            sprint_id = kwargs['sprint_id']
+        elif self.board_id:
+            sprint_id = self._get_current_sprint_id()
+        else:
+            sprint_id = None
+        
+        if sprint_id:
+            sprint_field_id = self._get_sprint_custom_field_id()
+            if sprint_field_id:
+                # Sprint field expects just the sprint ID as a number
+                issue_data["fields"][sprint_field_id] = sprint_id
+        
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": self.auth_header
+        }
+        
+        try:
+            response = requests.post(url, json=issue_data, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            ticket_key = result.get('key')
+            ticket_id = result.get('id')
+            ticket_url = f"{self.jira_url}/browse/{ticket_key}"
+            
+            return {
+                'key': ticket_key,
+                'id': ticket_id,
+                'url': ticket_url
+            }
+        except requests.exceptions.RequestException as e:
+            print(f"  WARNING: Failed to create Jira ticket: {str(e)}")
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_detail = e.response.json()
+                    print(f"  Jira API Error: {error_detail}")
+                except:
+                    print(f"  HTTP Status: {e.response.status_code}")
+            return None
+
+
 class SalesforceUserProvisioner:
-    def __init__(self, org_alias: str):
-        """Initialize Salesforce connection using sf CLI"""
+    def __init__(self, org_alias: str, jira_client: Optional[JiraClient] = None):
+        """
+        Initialize Salesforce connection using sf CLI
+        
+        Args:
+            org_alias: Salesforce org alias
+            jira_client: Optional Jira client for ticket creation
+        """
         self.org_alias = org_alias
         self.org_info = self._get_org_info(org_alias)
         self.sandbox_name = self._extract_sandbox_name()
         self.sf = self._get_sf_connection()
+        self.jira_client = jira_client
     
     def _get_org_info(self, org_alias: str) -> Dict:
         """Get org information using sf CLI"""
@@ -114,61 +376,6 @@ class SalesforceUserProvisioner:
         if result['records']:
             return result['records'][0]['Id']
         return None
-    
-    def get_user_to_mimic(self, mimic_user_email: str) -> Optional[Dict]:
-        """Get user details (profile, role, title, permission sets) to mimic"""
-        if not mimic_user_email:
-            return None
-        
-        # Handle sandbox usernames - try both with and without sandbox suffix
-        query_email = mimic_user_email
-        if self.sandbox_name and not query_email.endswith(f".{self.sandbox_name}"):
-            query_email = f"{mimic_user_email}.{self.sandbox_name}"
-        
-        # Try to find user by email or username
-        query = f"""
-        SELECT Id, FirstName, LastName, Email, Username, Profile.Name, UserRole.Name, Title
-        FROM User 
-        WHERE (Email = '{mimic_user_email}' OR Username = '{query_email}' OR Email = '{query_email}')
-        AND IsActive = true 
-        LIMIT 1
-        """
-        
-        result = self.sf.query(query)
-        if not result['records']:
-            return None
-        
-        user = result['records'][0]
-        user_id = user['Id']
-        
-        # Get permission sets assigned to this user
-        psa_query = f"""
-        SELECT PermissionSetId, PermissionSet.Name, PermissionSet.Label
-        FROM PermissionSetAssignment
-        WHERE AssigneeId = '{user_id}'
-        """
-        psa_result = self.sf.query(psa_query)
-        
-        # Get permission set groups assigned to this user
-        psg_query = f"""
-        SELECT PermissionSetGroupId, PermissionSetGroup.DeveloperName, PermissionSetGroup.MasterLabel
-        FROM PermissionSetGroupAssignment
-        WHERE AssigneeId = '{user_id}'
-        """
-        psg_result = self.sf.query(psg_query)
-        
-        permission_set_ids = [psa['PermissionSetId'] for psa in psa_result['records']]
-        permission_set_group_ids = [psg['PermissionSetGroupId'] for psg in psg_result['records']]
-        
-        return {
-            'Profile': user.get('Profile', {}).get('Name'),
-            'Role': user.get('UserRole', {}).get('Name'),
-            'Title': user.get('Title'),
-            'permission_sets': permission_set_ids,
-            'permission_set_groups': permission_set_group_ids,
-            'user_id': user_id,
-            'name': f"{user.get('FirstName', '')} {user.get('LastName', '')}".strip()
-        }
     
     def get_permission_set_groups_and_members(self) -> Dict[str, Set[str]]:
         """Get all Permission Set Groups and their member permission sets"""
@@ -367,12 +574,19 @@ class SalesforceUserProvisioner:
             print(f"  SUCCESS: User created: {user_id}")
             
             # Assign permission set groups FIRST
+            assigned_group_names = []
             if permission_data.get('permission_set_groups'):
-                self.assign_permission_set_groups(user_id, permission_data['permission_set_groups'])
+                assigned_group_names = self.assign_permission_set_groups(user_id, permission_data['permission_set_groups'])
             
             # Then assign individual permission sets
+            assigned_permission_set_names = []
             if permission_data.get('permission_sets'):
-                self.assign_permission_sets(user_id, permission_data['permission_sets'])
+                assigned_permission_set_names = self.assign_permission_sets(user_id, permission_data['permission_sets'])
+            
+            # Create Jira ticket if configured
+            if self.jira_client:
+                user_link = self.get_user_link(user_id)
+                self.create_jira_ticket(user_data, user_id, user_link, assigned_group_names, assigned_permission_set_names)
             
             # Note: Password reset must be done manually in Salesforce UI
             print(f"  NOTE: Please reset password manually in Setup > Users > Users")
@@ -400,12 +614,52 @@ class SalesforceUserProvisioner:
             except Exception as e:
                 print(f"  WARNING: Error assigning group {psg_id}: {str(e)}")
     
-    def assign_permission_sets(self, user_id: str, permission_set_ids: List[str]):
-        """Assign individual permission sets to user"""
+    def get_permission_set_names(self, permission_set_ids: List[str]) -> List[str]:
+        """Get permission set names from IDs"""
         if not permission_set_ids:
-            return
+            return []
         
-        success_count = 0
+        permission_set_ids_str = "', '".join(permission_set_ids)
+        query = f"""
+        SELECT Id, Name, Label
+        FROM PermissionSet
+        WHERE Id IN ('{permission_set_ids_str}')
+        """
+        
+        try:
+            result = self.sf.query(query)
+            # Return Label if available, otherwise Name
+            return [ps.get('Label') or ps.get('Name', 'Unknown') for ps in result['records']]
+        except Exception as e:
+            print(f"  WARNING: Could not get permission set names: {str(e)}")
+            return []
+    
+    def get_permission_set_group_names(self, permission_set_group_ids: List[str]) -> List[str]:
+        """Get permission set group names from IDs"""
+        if not permission_set_group_ids:
+            return []
+        
+        permission_set_group_ids_str = "', '".join(permission_set_group_ids)
+        query = f"""
+        SELECT Id, DeveloperName, MasterLabel
+        FROM PermissionSetGroup
+        WHERE Id IN ('{permission_set_group_ids_str}')
+        """
+        
+        try:
+            result = self.sf.query(query)
+            # Return MasterLabel if available, otherwise DeveloperName
+            return [psg.get('MasterLabel') or psg.get('DeveloperName', 'Unknown') for psg in result['records']]
+        except Exception as e:
+            print(f"  WARNING: Could not get permission set group names: {str(e)}")
+            return []
+    
+    def assign_permission_sets(self, user_id: str, permission_set_ids: List[str]) -> List[str]:
+        """Assign individual permission sets to user. Returns list of successfully assigned permission set names."""
+        if not permission_set_ids:
+            return []
+        
+        success_ids = []
         for ps_id in permission_set_ids:
             try:
                 assignment = {
@@ -417,7 +671,7 @@ class SalesforceUserProvisioner:
                     method='POST',
                     json=assignment
                 )
-                success_count += 1
+                success_ids.append(ps_id)
             except Exception as e:
                 error_msg = str(e)
                 if 'INVALID_CROSS_REFERENCE_KEY' in error_msg and 'profile' in error_msg.lower():
@@ -426,8 +680,298 @@ class SalesforceUserProvisioner:
                 else:
                     print(f"  WARNING: Error assigning permission set {ps_id}: {error_msg}")
         
-        if success_count > 0:
-            print(f"  SUCCESS: Assigned {success_count} individual permission sets")
+        if success_ids:
+            print(f"  SUCCESS: Assigned {len(success_ids)} individual permission sets")
+            # Get names of successfully assigned permission sets
+            return self.get_permission_set_names(success_ids)
+        return []
+    
+    def assign_permission_set_groups(self, user_id: str, permission_set_group_ids: List[str]) -> List[str]:
+        """Assign permission set groups to user. Returns list of successfully assigned group names."""
+        success_ids = []
+        for psg_id in permission_set_group_ids:
+            try:
+                assignment = {
+                    'AssigneeId': user_id,
+                    'PermissionSetGroupId': psg_id
+                }
+                self.sf.restful(
+                    'sobjects/PermissionSetGroupAssignment/',
+                    method='POST',
+                    json=assignment
+                )
+                success_ids.append(psg_id)
+                print(f"  SUCCESS: Assigned permission set group: {psg_id}")
+            except Exception as e:
+                print(f"  WARNING: Error assigning group {psg_id}: {str(e)}")
+        
+        if success_ids:
+            # Get names of successfully assigned groups
+            return self.get_permission_set_group_names(success_ids)
+        return []
+    
+    def get_user_link(self, user_id: str) -> str:
+        """Generate Salesforce user record link in Setup format"""
+        instance_url = self.org_info.get("instanceUrl", "")
+        # Extract domain from instance URL (e.g., mavenclinic from https://mavenclinic.my.salesforce.com)
+        # Convert to setup URL format: https://mavenclinic.my.salesforce-setup.com/lightning/setup/ManageUsers/page?address=%2F{user_id}%3Fnoredirect%3D1%26isUserEntityOverride%3D1
+        if '.my.salesforce.com' in instance_url:
+            domain = instance_url.split('//')[1].split('.my.salesforce.com')[0]
+            setup_url = f"https://{domain}.my.salesforce-setup.com/lightning/setup/ManageUsers/page?address=%2F{user_id}%3Fnoredirect%3D1%26isUserEntityOverride%3D1"
+            return setup_url
+        else:
+            # Fallback to old format if URL structure is unexpected
+            lightning_url = instance_url.replace('.my.salesforce.com', '.lightning.force.com')
+            return f"{lightning_url}/lightning/r/User/{user_id}/view"
+    
+    def create_jira_ticket(self, user_data: Dict, user_id: str, user_link: str, 
+                          assigned_group_names: List[str] = None, assigned_permission_set_names: List[str] = None):
+        """Create a Jira ticket for new user provisioning"""
+        if not self.jira_client:
+            return
+        
+        if assigned_group_names is None:
+            assigned_group_names = []
+        if assigned_permission_set_names is None:
+            assigned_permission_set_names = []
+        
+        user_full_name = f"{user_data['FirstName']} {user_data['LastName']}"
+        summary = f"Salesforce Access for {user_full_name}"
+        
+        # Build permission sets list items
+        permission_set_items = []
+        for group_name in assigned_group_names:
+            permission_set_items.append({
+                "type": "listItem",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": f"Permission Set Group: {group_name}"}
+                    ]
+                }]
+            })
+        for ps_name in assigned_permission_set_names:
+            permission_set_items.append({
+                "type": "listItem",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": f"Permission Set: {ps_name}"}
+                    ]
+                }]
+            })
+        
+        # Build description using Atlassian Document Format (ADF) for proper formatting
+        description_content = [
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "Provision Salesforce user for: "},
+                    {"type": "text", "text": user_full_name, "marks": [{"type": "strong"}]}
+                ]
+            },
+            {"type": "paragraph"},  # Empty line
+            {
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": [{"type": "text", "text": "User Details"}]
+            },
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Name: "},
+                                {"type": "text", "text": f"{user_data['FirstName']} {user_data['LastName']}"}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Email: "},
+                                {"type": "text", "text": user_data['Email']}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Username: "},
+                                {"type": "text", "text": user_data['Username']}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Title: "},
+                                {"type": "text", "text": user_data.get('Title', 'N/A')}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Profile: "},
+                                {"type": "text", "text": user_data['Profile']}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Role: "},
+                                {"type": "text", "text": user_data.get('Role', 'N/A')}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Manager: "},
+                                {"type": "text", "text": user_data.get('ManagerEmail', 'N/A')}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Time Zone: "},
+                                {"type": "text", "text": user_data.get('TimeZone', 'America/New_York')}
+                            ]
+                        }]
+                    }
+                ]
+            },
+            {"type": "paragraph"},  # Empty line
+            {
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": [{"type": "text", "text": "Salesforce Details"}]
+            },
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "User ID: "},
+                                {"type": "text", "text": user_id}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "User Link: "},
+                                {
+                                    "type": "text",
+                                    "text": user_link,
+                                    "marks": [{"type": "link", "attrs": {"href": user_link}}]
+                                }
+                            ]
+                        }]
+                    }
+                ]
+            },
+            {"type": "paragraph"},  # Empty line
+            {
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": [{"type": "text", "text": "Permission Sets Assigned"}]
+            },
+            {
+                "type": "bulletList",
+                "content": permission_set_items
+            },
+            {"type": "paragraph"},  # Empty line
+            {
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": [{"type": "text", "text": "Next Steps"}]
+            },
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Password reset required (manual action in Salesforce UI)"}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Verify permission sets assigned correctly"}
+                            ]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "Confirm user can log in successfully"}
+                            ]
+                        }]
+                    }
+                ]
+            }
+        ]
+        
+        description = {
+            "type": "doc",
+            "version": 1,
+            "content": description_content
+        }
+        
+        # Use assignee from config if available
+        ticket_kwargs = {
+            'labels': ['user-provisioning', 'salesforce']
+        }
+        
+        # Add assignee if configured
+        if self.jira_client.assignee_email:
+            ticket_kwargs['assignee'] = self.jira_client.assignee_email
+        
+        ticket = self.jira_client.create_ticket(
+            summary=summary,
+            description=description,
+            **ticket_kwargs
+        )
+        
+        if ticket:
+            print(f"  SUCCESS: Jira ticket created: {ticket['key']}")
+            print(f"  Ticket URL: {ticket['url']}")
+        else:
+            print(f"  WARNING: Jira ticket creation failed (user still created successfully)")
     
     def provision_users_from_csv(self, csv_file: str, permission_set_threshold: float = 0.5):
         """Main method to provision users from CSV file"""
@@ -444,85 +988,12 @@ class SalesforceUserProvisioner:
         }
         
         for i, user_data in enumerate(users, 1):
-            # Validate required fields
-            if 'Email' not in user_data or not user_data['Email']:
-                results['failed'].append({
-                    'user': user_data,
-                    'error': 'Email is required'
-                })
-                continue
+            print(f"\n[{i}/{len(users)}] Creating user: {user_data['FirstName']} {user_data['LastName']}")
             
-            email = user_data['Email'].strip()
-            
-            # Parse name from email and set username
-            try:
-                first_name, last_name = self.parse_name_from_email(email)
-                user_data['FirstName'] = first_name
-                user_data['LastName'] = last_name
-                
-                # Set username: append sandbox name if in sandbox environment
-                username = email
-                if self.sandbox_name:
-                    username = f"{email}.{self.sandbox_name}"
-                    print(f"  Sandbox detected: Appending '.{self.sandbox_name}' to username")
-                user_data['Username'] = username
-            except ValueError as e:
-                results['failed'].append({
-                    'user': user_data,
-                    'error': str(e)
-                })
-                continue
-            
-            print(f"\n[{i}/{len(users)}] Creating user: {first_name} {last_name} ({email})")
-            
-            # Check if MimicUser is provided
-            mimic_user_email = user_data.get('MimicUser', '').strip() if user_data.get('MimicUser') else None
-            permission_data = {'permission_set_groups': [], 'permission_sets': []}
-            
-            if mimic_user_email:
-                # Get user details to mimic
-                print(f"  Mimicking user: {mimic_user_email}")
-                mimic_user = self.get_user_to_mimic(mimic_user_email)
-                
-                if not mimic_user:
-                    results['failed'].append({
-                        'user': user_data,
-                        'error': f"Could not find user to mimic: {mimic_user_email}"
-                    })
-                    continue
-                
-                # Copy profile, role, and title from mimic user (unless overridden in CSV)
-                if not user_data.get('Profile'):
-                    user_data['Profile'] = mimic_user['Profile']
-                    print(f"  Using Profile from mimic user: {mimic_user['Profile']}")
-                
-                if not user_data.get('Role'):
-                    user_data['Role'] = mimic_user['Role']
-                    if mimic_user['Role']:
-                        print(f"  Using Role from mimic user: {mimic_user['Role']}")
-                
-                if not user_data.get('Title'):
-                    user_data['Title'] = mimic_user['Title'] or ''
-                    if mimic_user['Title']:
-                        print(f"  Using Title from mimic user: {mimic_user['Title']}")
-                
-                # Use permission sets directly from mimic user
-                permission_data = {
-                    'permission_set_groups': mimic_user['permission_set_groups'],
-                    'permission_sets': mimic_user['permission_sets']
-                }
-                print(f"  Copying {len(mimic_user['permission_set_groups'])} permission set groups and {len(mimic_user['permission_sets'])} permission sets from {mimic_user['name']}")
-            else:
-                # Use traditional analysis method - Profile and Role must be provided in CSV
-                if not user_data.get('Profile'):
-                    results['failed'].append({
-                        'user': user_data,
-                        'error': 'Profile is required (or provide MimicUser)'
-                    })
-                    continue
-            
-            # Verify profile exists before creating user
+            # Analyze permission sets
             profile_id = self.get_profile_id(user_data['Profile'])
+            role_id = self.get_role_id(user_data['Role']) if user_data.get('Role') else None
+            
             if not profile_id:
                 results['failed'].append({
                     'user': user_data,
@@ -530,11 +1001,9 @@ class SalesforceUserProvisioner:
                 })
                 continue
             
-            # If not mimicking, analyze permission sets based on Profile + Role
-            if not mimic_user_email:
-                role_id = self.get_role_id(user_data['Role']) if user_data.get('Role') else None
-                if role_id:
-                    permission_data = self.analyze_permission_sets(profile_id, role_id, permission_set_threshold)
+            permission_data = {'permission_set_groups': [], 'permission_sets': []}
+            if role_id:
+                permission_data = self.analyze_permission_sets(profile_id, role_id, permission_set_threshold)
             
             # Create user
             user_id = self.create_user(user_data, permission_data)
@@ -560,63 +1029,6 @@ class SalesforceUserProvisioner:
         return results
 
 
-def get_org_info(org_alias: str) -> Optional[Dict]:
-    """Get org information without creating a connection"""
-    sf_cmd = shutil.which("sf") or "sf.cmd" if os.name == 'nt' else "sf"
-    
-    result = subprocess.run(
-        [sf_cmd, "org", "display", "--target-org", org_alias, "--json"],
-        capture_output=True,
-        text=True,
-        shell=True
-    )
-    if result.returncode != 0:
-        return None
-    
-    try:
-        org_info = json.loads(result.stdout)
-        return org_info.get("result", {})
-    except:
-        return None
-
-
-def confirm_org(org_alias: str) -> bool:
-    """Display org information and ask for confirmation"""
-    org_info = get_org_info(org_alias)
-    
-    if not org_info:
-        print(f"ERROR: Could not retrieve information for org '{org_alias}'")
-        print(f"Make sure the org alias is correct and you're authenticated.")
-        return False
-    
-    username = org_info.get("username", "Unknown")
-    org_id = org_info.get("orgId", "Unknown")
-    instance_url = org_info.get("instanceUrl", "Unknown")
-    org_type = org_info.get("instanceType", "")
-    
-    print("\n" + "="*60)
-    print("***  CONFIRM TARGET ENVIRONMENT  ***")
-    print("="*60)
-    print(f"Org Alias:     {org_alias}")
-    print(f"Username:      {username}")
-    print(f"Org ID:        {org_id}")
-    print(f"Instance URL:  {instance_url}")
-    if org_type:
-        print(f"Org Type:      {org_type}")
-    print("="*60)
-    print()
-    
-    # Check if it's production
-    is_production = org_type.lower() == "production" or "prod" in org_alias.lower()
-    if is_production:
-        print("***  WARNING: This appears to be a PRODUCTION environment!  ***")
-        print()
-    
-    response = input("Do you want to proceed with provisioning users in this org? (yes/no): ").strip().lower()
-    
-    return response in ['yes', 'y']
-
-
 def main():
     parser = argparse.ArgumentParser(
         description='Provision Salesforce users from CSV file',
@@ -629,12 +1041,9 @@ Examples:
   # Provision with custom threshold (60% instead of 50%)
   python provision_user.py --csv users.csv --org mavenprod --threshold 0.6
   
-  # Skip confirmation prompt (useful for automation)
-  python provision_user.py --csv users.csv --org mavenprod --skip-confirmation
-  
 CSV Format:
-  Email,Title,ManagerEmail,Profile,Role,TimeZone
-  john.doe@mavenclinic.com,Sales Rep,jane.manager@mavenclinic.com,Sales,Sales Rep,America/New_York
+  FirstName,LastName,Email,Username,Title,ManagerEmail,Profile,Role,TimeZone
+  John,Doe,john.doe@mavenclinic.com,john.doe@mavenclinic.com,Sales Rep,jane.manager@mavenclinic.com,Sales,Sales Rep,America/New_York
         """
     )
     parser.add_argument('--csv', required=True, help='Path to CSV file with user data')
@@ -643,8 +1052,12 @@ CSV Format:
                        help='Permission set assignment threshold (0.0-1.0, default: 0.5)')
     parser.add_argument('--output', default='provisioning_results.json',
                        help='Output file for results (default: provisioning_results.json)')
-    parser.add_argument('--skip-confirmation', action='store_true',
-                       help='Skip the org confirmation prompt (useful for automation)')
+    parser.add_argument('--jira-url', help='Jira instance URL (e.g., https://company.atlassian.net)')
+    parser.add_argument('--jira-email', help='Jira user email for API authentication')
+    parser.add_argument('--jira-token', help='Jira API token')
+    parser.add_argument('--jira-project', help='Jira project key (e.g., PROJ)')
+    parser.add_argument('--jira-issue-type', default='Task', help='Jira issue type (default: Task)')
+    parser.add_argument('--jira-config', help='Path to JSON file with Jira configuration')
     
     args = parser.parse_args()
     
@@ -660,17 +1073,70 @@ CSV Format:
     print(f"Target Org: {args.org}")
     print(f"Permission Set Threshold: {args.threshold * 100}%")
     print("="*60)
+    print()
     
-    # Confirm org unless --skip-confirmation is used
-    if not args.skip_confirmation:
-        if not confirm_org(args.org):
-            print("\nProvisioning cancelled by user.")
-            sys.exit(0)
-        print()
+    # Initialize Jira client if configured
+    jira_client = None
+    if args.jira_config:
+        # Load Jira config from file
+        try:
+            with open(args.jira_config, 'r') as f:
+                jira_config = json.load(f)
+            jira_client = JiraClient(
+                jira_url=jira_config['jira_url'],
+                email=jira_config['email'],
+                api_token=jira_config['api_token'],
+                project_key=jira_config['project_key'],
+                issue_type=jira_config.get('issue_type', 'Task'),
+                assignee_email=jira_config.get('assignee_email'),
+                board_id=jira_config.get('board_id')
+            )
+            print("Jira integration: ENABLED")
+            if jira_config.get('assignee_email'):
+                print(f"  Assignee: {jira_config['assignee_email']}")
+            if jira_config.get('board_id'):
+                print(f"  Board ID: {jira_config['board_id']} (for current sprint)")
+        except Exception as e:
+            print(f"WARNING: Failed to load Jira config from {args.jira_config}: {e}")
+            print("Continuing without Jira integration...")
+    elif args.jira_url and args.jira_email and args.jira_token and args.jira_project:
+        # Use command-line arguments
+        jira_client = JiraClient(
+            jira_url=args.jira_url,
+            email=args.jira_email,
+            api_token=args.jira_token,
+            project_key=args.jira_project,
+            issue_type=args.jira_issue_type,
+            assignee_email=os.getenv('JIRA_ASSIGNEE_EMAIL'),
+            board_id=int(os.getenv('JIRA_BOARD_ID')) if os.getenv('JIRA_BOARD_ID') else None
+        )
+        print("Jira integration: ENABLED")
+    else:
+        # Check environment variables
+        jira_url = os.getenv('JIRA_URL')
+        jira_email = os.getenv('JIRA_EMAIL')
+        jira_token = os.getenv('JIRA_API_TOKEN')
+        jira_project = os.getenv('JIRA_PROJECT_KEY')
+        
+        if jira_url and jira_email and jira_token and jira_project:
+            jira_client = JiraClient(
+                jira_url=jira_url,
+                email=jira_email,
+                api_token=jira_token,
+                project_key=jira_project,
+                issue_type=os.getenv('JIRA_ISSUE_TYPE', 'Task'),
+                assignee_email=os.getenv('JIRA_ASSIGNEE_EMAIL'),
+                board_id=int(os.getenv('JIRA_BOARD_ID')) if os.getenv('JIRA_BOARD_ID') else None
+            )
+            print("Jira integration: ENABLED (from environment variables)")
+        else:
+            print("Jira integration: DISABLED (no configuration provided)")
+    
+    print()
     
     # Initialize provisioner
     try:
-        provisioner = SalesforceUserProvisioner(args.org)
+        provisioner = SalesforceUserProvisioner(args.org, jira_client)
     except SystemExit:
         sys.exit(1)
     
@@ -690,16 +1156,11 @@ CSV Format:
             print(f"  User ID: {success['userId']}")
             print(f"  Username: {success['user']['Username']}")
             print(f"  Email: {success['user']['Email']}")
-            print(f"  Name: {success['user'].get('FirstName', '')} {success['user'].get('LastName', '')}")
     
     if results['failed']:
         print("\nFAILED:")
         for failure in results['failed']:
-            email = failure['user'].get('Email', 'Unknown')
-            name = f"{failure['user'].get('FirstName', '')} {failure['user'].get('LastName', '')}".strip()
-            if not name:
-                name = email
-            print(f"  User: {name} ({email})")
+            print(f"  User: {failure['user'].get('FirstName', '')} {failure['user'].get('LastName', '')}")
             print(f"  Error: {failure.get('error', 'Unknown error')}")
 
 

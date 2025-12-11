@@ -1,0 +1,34 @@
+# CSV files (may contain sensitive user data)
+*.csv
+!users_template.csv
+
+# Provisioning results (may contain sensitive user IDs and data)
+provisioning_results.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sensitive config files
+jira_config.json
+*.key
+*.pem
+
