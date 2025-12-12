@@ -5,6 +5,9 @@
 # Provisioning results (may contain sensitive user IDs and data)
 provisioning_results.json
 
+# User backup files (contain sensitive user permission data)
+user_backup_*.json
+
 # Python
 __pycache__/
 *.py[cod]
