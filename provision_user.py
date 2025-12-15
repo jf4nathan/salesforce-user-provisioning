@@ -504,6 +504,98 @@ class SalesforceUserProvisioner:
             'permission_sets': individual_ps_to_assign
         }
     
+    def find_user_by_email(self, email: str) -> Optional[Dict]:
+        """Find user by email address"""
+        if not email:
+            return None
+        
+        # Handle sandbox usernames - try both with and without sandbox suffix
+        query_email = email
+        if self.sandbox_name and not query_email.endswith(f".{self.sandbox_name}"):
+            query_email = f"{email}.{self.sandbox_name}"
+        
+        # Try to find user by email or username
+        query = f"""
+        SELECT Id, FirstName, LastName, Email, Username, Profile.Name, ProfileId, UserRole.Name, UserRoleId, Title
+        FROM User 
+        WHERE (Email = '{email}' OR Username = '{query_email}' OR Email = '{query_email}')
+        AND IsActive = true
+        LIMIT 1
+        """
+        
+        try:
+            result = self.sf.query(query)
+            if result['records']:
+                user = result['records'][0]
+                return {
+                    'Id': user['Id'],
+                    'FirstName': user.get('FirstName', ''),
+                    'LastName': user.get('LastName', ''),
+                    'Email': user.get('Email', ''),
+                    'Username': user.get('Username', ''),
+                    'Profile': user.get('Profile', {}).get('Name', '') if user.get('Profile') else '',
+                    'ProfileId': user.get('ProfileId', ''),
+                    'Role': user.get('UserRole', {}).get('Name', '') if user.get('UserRole') else '',
+                    'RoleId': user.get('UserRoleId', ''),
+                    'Title': user.get('Title', '')
+                }
+        except Exception as e:
+            print(f"  WARNING: Error finding user by email {email}: {str(e)}")
+        
+        return None
+    
+    def get_mimic_user_config(self, mimic_user_email: str) -> Optional[Dict]:
+        """Get user details (profile, role, permission sets) to mimic"""
+        mimic_user = self.find_user_by_email(mimic_user_email)
+        if not mimic_user:
+            print(f"  ERROR: Mimic user not found: {mimic_user_email}")
+            return None
+        
+        user_id = mimic_user['Id']
+        print(f"  Found mimic user: {mimic_user.get('FirstName', '')} {mimic_user.get('LastName', '')} ({mimic_user_email})")
+        
+        # Get permission sets assigned to this user
+        psa_query = f"""
+        SELECT PermissionSetId, PermissionSet.Name, PermissionSet.Label
+        FROM PermissionSetAssignment
+        WHERE AssigneeId = '{user_id}'
+        """
+        
+        permission_set_ids = []
+        try:
+            psa_result = self.sf.query(psa_query)
+            permission_set_ids = [psa['PermissionSetId'] for psa in psa_result['records']]
+            print(f"  Found {len(permission_set_ids)} permission sets")
+        except Exception as e:
+            print(f"  WARNING: Could not get permission sets: {str(e)}")
+        
+        # Get permission set groups assigned to this user
+        permission_set_group_ids = []
+        try:
+            psg_query = f"""
+            SELECT PermissionSetGroupId
+            FROM PermissionSetGroupAssignment
+            WHERE AssigneeId = '{user_id}'
+            """
+            psg_result = self.sf.query(psg_query)
+            permission_set_group_ids = [psg['PermissionSetGroupId'] for psg in psg_result['records']]
+            print(f"  Found {len(permission_set_group_ids)} permission set groups")
+        except Exception as e:
+            # PermissionSetGroupAssignment may not be available
+            pass
+        
+        return {
+            'Profile': mimic_user.get('Profile', ''),
+            'ProfileId': mimic_user.get('ProfileId', ''),
+            'Role': mimic_user.get('Role', ''),
+            'RoleId': mimic_user.get('RoleId', ''),
+            'Title': mimic_user.get('Title', ''),
+            'permission_set_ids': permission_set_ids,
+            'permission_set_group_ids': permission_set_group_ids,
+            'user_id': user_id,
+            'name': f"{mimic_user.get('FirstName', '')} {mimic_user.get('LastName', '')}".strip()
+        }
+    
     def parse_name_from_email(self, email: str) -> Tuple[str, str]:
         """Parse first name and last name from email (firstname.lastname@domain.com format)"""
         if not email or '@' not in email:
@@ -530,12 +622,18 @@ class SalesforceUserProvisioner:
     def create_user(self, user_data: Dict, permission_data: Dict[str, List[str]]) -> Optional[str]:
         """Create user in Salesforce"""
         # Lookup IDs
-        profile_id = self.get_profile_id(user_data['Profile'])
-        if not profile_id:
-            print(f"  ERROR: Profile '{user_data['Profile']}' not found")
+        profile_name = user_data.get('Profile', '').strip()
+        if not profile_name:
+            print(f"  ERROR: Profile is required")
             return None
         
-        role_id = self.get_role_id(user_data['Role']) if user_data.get('Role') else None
+        profile_id = self.get_profile_id(profile_name)
+        if not profile_id:
+            print(f"  ERROR: Profile '{profile_name}' not found")
+            return None
+        
+        role_name = user_data.get('Role', '').strip()
+        role_id = self.get_role_id(role_name) if role_name else None
         manager_id = self.get_manager_id(user_data.get('ManagerEmail', ''))
         
         # Determine Marketing User checkbox
@@ -988,22 +1086,77 @@ class SalesforceUserProvisioner:
         }
         
         for i, user_data in enumerate(users, 1):
+            # Parse name from email if not provided
+            if not user_data.get('FirstName') or not user_data.get('LastName'):
+                try:
+                    first_name, last_name = self.parse_name_from_email(user_data['Email'])
+                    user_data['FirstName'] = user_data.get('FirstName', first_name)
+                    user_data['LastName'] = user_data.get('LastName', last_name)
+                except Exception as e:
+                    print(f"  ERROR: Could not parse name from email: {str(e)}")
+                    results['failed'].append({
+                        'user': user_data,
+                        'error': f"Could not parse name from email: {str(e)}"
+                    })
+                    continue
+            
+            # Set username to email if not provided
+            if not user_data.get('Username'):
+                user_data['Username'] = user_data['Email']
+                # Handle sandbox usernames
+                if self.sandbox_name:
+                    user_data['Username'] = f"{user_data['Email']}.{self.sandbox_name}"
+            
             print(f"\n[{i}/{len(users)}] Creating user: {user_data['FirstName']} {user_data['LastName']}")
             
-            # Analyze permission sets
-            profile_id = self.get_profile_id(user_data['Profile'])
-            role_id = self.get_role_id(user_data['Role']) if user_data.get('Role') else None
-            
-            if not profile_id:
-                results['failed'].append({
-                    'user': user_data,
-                    'error': f"Profile '{user_data['Profile']}' not found"
-                })
-                continue
-            
-            permission_data = {'permission_set_groups': [], 'permission_sets': []}
-            if role_id:
-                permission_data = self.analyze_permission_sets(profile_id, role_id, permission_set_threshold)
+            # Check for MimicUser
+            mimic_user_email = user_data.get('MimicUser', '').strip()
+            if mimic_user_email:
+                print(f"  Using MimicUser: {mimic_user_email}")
+                mimic_config = self.get_mimic_user_config(mimic_user_email)
+                if not mimic_config:
+                    results['failed'].append({
+                        'user': user_data,
+                        'error': f"Mimic user '{mimic_user_email}' not found"
+                    })
+                    continue
+                
+                # Copy Profile, Role, and Title from mimic user
+                user_data['Profile'] = mimic_config['Profile']
+                user_data['Role'] = mimic_config.get('Role', '')
+                if not user_data.get('Title'):
+                    user_data['Title'] = mimic_config.get('Title', '')
+                
+                # Get permission sets from mimic user
+                permission_data = {
+                    'permission_set_groups': mimic_config.get('permission_set_group_ids', []),
+                    'permission_sets': mimic_config.get('permission_set_ids', [])
+                }
+            else:
+                # Use Profile/Role from CSV
+                profile_name = user_data.get('Profile', '').strip()
+                role_name = user_data.get('Role', '').strip()
+                
+                if not profile_name:
+                    results['failed'].append({
+                        'user': user_data,
+                        'error': "Profile is required (or provide MimicUser)"
+                    })
+                    continue
+                
+                profile_id = self.get_profile_id(profile_name)
+                role_id = self.get_role_id(role_name) if role_name else None
+                
+                if not profile_id:
+                    results['failed'].append({
+                        'user': user_data,
+                        'error': f"Profile '{profile_name}' not found"
+                    })
+                    continue
+                
+                permission_data = {'permission_set_groups': [], 'permission_sets': []}
+                if role_id:
+                    permission_data = self.analyze_permission_sets(profile_id, role_id, permission_set_threshold)
             
             # Create user
             user_id = self.create_user(user_data, permission_data)
