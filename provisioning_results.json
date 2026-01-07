@@ -2,18 +2,47 @@
   "success": [
     {
       "user": {
-        "Email": "jonathan.test@mavenclinic.com",
-        "Title": "",
-        "ManagerEmail": "",
-        "Profile": "Marketing",
-        "Role": "Marketing",
-        "TimeZone": "",
-        "FirstName": "Jonathan",
-        "LastName": "Test",
-        "Username": "jonathan.test@mavenclinic.com.devjtang1"
+        "FirstName": "Andrea",
+        "LastName": "Kewekordes",
+        "Email": "andrea.kewekordes@mavenclinic.com",
+        "Username": "andrea.kewekordes@mavenclinic.com",
+        "Title": "Strategic Growth Executive",
+        "ManagerEmail": "alison.magee@mavenclinic.com",
+        "Profile": "Sales",
+        "Role": "Sales Rep",
+        "TimeZone": "America/New_York"
       },
-      "userId": "005U700000QD3FoIAL"
+      "userId": "005UG000007r9E1YAI"
     }
   ],
-  "failed": []
+  "failed": [
+    {
+      "user": {
+        "FirstName": "Erick",
+        "LastName": "Arapi",
+        "Email": "erick.arapi@mavenclinic.com",
+        "Username": "erick.arapi@mavenclinic.com",
+        "Title": "",
+        "ManagerEmail": "emma.lloyd@mavenclinic.com",
+        "Profile": "Marketing",
+        "Role": "Marketing",
+        "TimeZone": "America/New_York"
+      },
+      "error": "User creation failed"
+    },
+    {
+      "user": {
+        "FirstName": "Jim",
+        "LastName": "Robson",
+        "Email": "jim.robson@mavenclinic.com",
+        "Username": "jim.robson@mavenclinic.com",
+        "Title": "Regional Vice President of Sales",
+        "ManagerEmail": "ken.barlotta@mavenclinic.com",
+        "Profile": "Sales",
+        "Role": "Sales VP",
+        "TimeZone": "America/New_York"
+      },
+      "error": "User creation failed"
+    }
+  ]
 }
