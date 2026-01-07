@@ -219,6 +219,8 @@ class JiraClient:
                 account_id = self._get_assignee_account_id(assignee_value)
                 if account_id:
                     issue_data["fields"]["assignee"] = {"accountId": account_id}
+                else:
+                    print(f"  WARNING: Could not find assignee account ID for {assignee_value}, skipping assignee")
             else:
                 # It's already an accountId
                 issue_data["fields"]["assignee"] = {"accountId": assignee_value}
@@ -227,6 +229,8 @@ class JiraClient:
             account_id = self._get_assignee_account_id(self.assignee_email)
             if account_id:
                 issue_data["fields"]["assignee"] = {"accountId": account_id}
+            else:
+                print(f"  WARNING: Could not find assignee account ID for {self.assignee_email}, skipping assignee")
         
         if 'labels' in kwargs:
             issue_data["fields"]["labels"] = kwargs['labels']
@@ -236,18 +240,20 @@ class JiraClient:
             issue_data["fields"]["components"] = [{"name": comp} for comp in kwargs['components']]
         
         # Add sprint if available
-        if 'sprint_id' in kwargs:
-            sprint_id = kwargs['sprint_id']
-        elif self.board_id:
-            sprint_id = self._get_current_sprint_id()
-        else:
-            sprint_id = None
-        
-        if sprint_id:
-            sprint_field_id = self._get_sprint_custom_field_id()
-            if sprint_field_id:
-                # Sprint field expects just the sprint ID as a number
-                issue_data["fields"][sprint_field_id] = sprint_id
+        # Note: Sprint assignment may need to be done after ticket creation via transition
+        # Skipping sprint assignment during creation to avoid API issues
+        # if 'sprint_id' in kwargs:
+        #     sprint_id = kwargs['sprint_id']
+        # elif self.board_id:
+        #     sprint_id = self._get_current_sprint_id()
+        # else:
+        #     sprint_id = None
+        # 
+        # if sprint_id:
+        #     sprint_field_id = self._get_sprint_custom_field_id()
+        #     if sprint_field_id:
+        #         # Sprint field expects a number (integer), not string or array
+        #         issue_data["fields"][sprint_field_id] = int(sprint_id)
         
         headers = {
             "Accept": "application/json",
@@ -263,6 +269,30 @@ class JiraClient:
             ticket_key = result.get('key')
             ticket_id = result.get('id')
             ticket_url = f"{self.jira_url}/browse/{ticket_key}"
+            
+            # Assign sprint after ticket creation (if available)
+            sprint_id = None
+            if 'sprint_id' in kwargs:
+                sprint_id = kwargs['sprint_id']
+            elif self.board_id:
+                sprint_id = self._get_current_sprint_id()
+            
+            if sprint_id:
+                sprint_field_id = self._get_sprint_custom_field_id()
+                if sprint_field_id:
+                    try:
+                        # Update ticket to add sprint
+                        update_url = f"{self.jira_url}/rest/api/3/issue/{ticket_id}"
+                        update_data = {
+                            "fields": {
+                                sprint_field_id: int(sprint_id)
+                            }
+                        }
+                        update_response = requests.put(update_url, json=update_data, headers=headers, timeout=10)
+                        update_response.raise_for_status()
+                        print(f"  SUCCESS: Assigned sprint to ticket")
+                    except Exception as e:
+                        print(f"  WARNING: Could not assign sprint to ticket: {str(e)}")
             
             return {
                 'key': ticket_key,
@@ -303,7 +333,7 @@ class SalesforceUserProvisioner:
             [sf_cmd, "org", "display", "--target-org", org_alias, "--json"],
             capture_output=True,
             text=True,
-            shell=True
+            shell=False
         )
         if result.returncode != 0:
             print(f"ERROR: Could not connect to org '{org_alias}'. Make sure you're authenticated.")
@@ -311,7 +341,17 @@ class SalesforceUserProvisioner:
             print(f"Error: {result.stderr}")
             sys.exit(1)
         
-        org_info = json.loads(result.stdout)
+        # Extract JSON from output (handle warnings that may appear before JSON)
+        output = result.stdout.strip()
+        # Find JSON object in output (starts with { and ends with })
+        json_start = output.find('{')
+        if json_start == -1:
+            print(f"ERROR: Could not parse JSON from sf org display output")
+            print(f"Output: {output}")
+            sys.exit(1)
+        
+        json_output = output[json_start:]
+        org_info = json.loads(json_output)
         return org_info["result"]
     
     def _extract_sandbox_name(self) -> Optional[str]:
@@ -752,6 +792,47 @@ class SalesforceUserProvisioner:
             print(f"  WARNING: Could not get permission set group names: {str(e)}")
             return []
     
+    def assign_gainsight_license(self, user_id: str) -> bool:
+        """Assign Gainsight package license to user if not already assigned"""
+        # Gainsight package license ID (18-character format)
+        gainsight_package_license_id = '050UH00000NFYVZYA5'
+        
+        try:
+            # Check if license is already assigned
+            query = f"""
+            SELECT Id FROM UserPackageLicense 
+            WHERE UserId = '{user_id}' 
+            AND PackageLicenseId = '{gainsight_package_license_id}'
+            LIMIT 1
+            """
+            result = self.sf.query(query)
+            if result['records']:
+                print(f"  INFO: Gainsight license already assigned")
+                return True
+            
+            # Check license availability
+            license_query = f"SELECT Id, UsedLicenses, AllowedLicenses FROM PackageLicense WHERE Id = '{gainsight_package_license_id}'"
+            license_result = self.sf.query(license_query)
+            
+            if license_result['records']:
+                license_info = license_result['records'][0]
+                available = license_info['AllowedLicenses'] - license_info['UsedLicenses']
+                if available <= 0:
+                    print(f"  WARNING: No Gainsight licenses available ({license_info['UsedLicenses']}/{license_info['AllowedLicenses']} used)")
+                    return False
+            
+            # Assign the license
+            user_package_license = {
+                'PackageLicenseId': gainsight_package_license_id,
+                'UserId': user_id
+            }
+            self.sf.UserPackageLicense.create(user_package_license)
+            print(f"  SUCCESS: Assigned Gainsight package license")
+            return True
+        except Exception as e:
+            print(f"  WARNING: Could not assign Gainsight license: {str(e)}")
+            return False
+    
     def assign_permission_sets(self, user_id: str, permission_set_ids: List[str]) -> List[str]:
         """Assign individual permission sets to user. Returns list of successfully assigned permission set names."""
         if not permission_set_ids:
@@ -781,7 +862,17 @@ class SalesforceUserProvisioner:
         if success_ids:
             print(f"  SUCCESS: Assigned {len(success_ids)} individual permission sets")
             # Get names of successfully assigned permission sets
-            return self.get_permission_set_names(success_ids)
+            assigned_names = self.get_permission_set_names(success_ids)
+            
+            # Check if Gainsight CS permission set was assigned
+            gainsight_ps_id = '0PSUH0000006LTB4A2'
+            gainsight_ps_names = ['Gainsight_CS', 'GAINSIGHT__Gainsight_CS', 'Gainsight CS']
+            
+            # Check by permission set ID or name
+            if gainsight_ps_id in success_ids or any(name in assigned_names for name in gainsight_ps_names) or any('gainsight' in name.lower() for name in assigned_names):
+                self.assign_gainsight_license(user_id)
+            
+            return assigned_names
         return []
     
     def assign_permission_set_groups(self, user_id: str, permission_set_group_ids: List[str]) -> List[str]:
@@ -805,7 +896,24 @@ class SalesforceUserProvisioner:
         
         if success_ids:
             # Get names of successfully assigned groups
-            return self.get_permission_set_group_names(success_ids)
+            assigned_group_names = self.get_permission_set_group_names(success_ids)
+            
+            # Check if any permission set group contains Gainsight CS permission set
+            # Query permission sets in these groups to check for Gainsight
+            try:
+                group_to_permission_sets = self.get_permission_set_groups_and_members()
+                gainsight_ps_id = '0PSUH0000006LTB4A2'
+                for psg_id in success_ids:
+                    if psg_id in group_to_permission_sets:
+                        if gainsight_ps_id in group_to_permission_sets[psg_id]:
+                            # Gainsight CS is in this group, assign license
+                            self.assign_gainsight_license(user_id)
+                            break
+            except Exception as e:
+                # If we can't check, that's okay - we'll rely on individual permission set check
+                pass
+            
+            return assigned_group_names
         return []
     
     def get_user_link(self, user_id: str) -> str:
@@ -1002,7 +1110,17 @@ class SalesforceUserProvisioner:
             },
             {
                 "type": "bulletList",
-                "content": permission_set_items
+                "content": permission_set_items if permission_set_items else [
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "None assigned"}
+                            ]
+                        }]
+                    }
+                ]
             },
             {"type": "paragraph"},  # Empty line
             {

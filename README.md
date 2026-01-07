@@ -198,7 +198,7 @@ When assigning the Gainsight CS permission set, also create a `UserPackageLicens
 
 ```python
 # After assigning permission set, also assign package license
-package_license_id = '050UH00000NFYVZ'  # Gainsight package license ID
+package_license_id = '050UH00000NFYVZYA5'  # Gainsight package license ID
 
 user_package_license = {
     'PackageLicenseId': package_license_id,
@@ -210,7 +210,7 @@ sf.UserPackageLicense.create(user_package_license)
 
 ### Package License Details
 
-- **Package License ID**: `050UH00000NFYVZ`
+- **Package License ID**: `050UH00000NFYVZYA5` (18-character format)
 - **Permission Set Name**: `Gainsight_CS` (API name: `GAINSIGHT__Gainsight_CS`)
 - **Permission Set ID**: `0PSUH0000006LTB4A2`
 
@@ -227,7 +227,7 @@ Before assigning the package license, check license availability via API:
 
 ```python
 # Query PackageLicense to check available licenses
-query = "SELECT Id, UsedLicenses, AllowedLicenses FROM PackageLicense WHERE Id = '050UH00000NFYVZ'"
+query = "SELECT Id, UsedLicenses, AllowedLicenses FROM PackageLicense WHERE Id = '050UH00000NFYVZYA5'"
 result = sf.query(query)
 
 if result['records']:
