@@ -55,7 +55,11 @@ Automated user provisioning script for Salesforce that creates users and assigns
 
 2. **Run the script**:
    ```bash
+   # Without Jira tickets:
    python provision_user.py --csv users.csv --org mavenprod
+
+   # With Jira tickets (recommended):
+   python provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
    ```
 
 3. **Reset passwords manually**:
@@ -136,7 +140,7 @@ The script can automatically create Jira tickets for each provisioned user. Tick
 ### Jira Configuration
 
 **Option 1: JSON Config File (Recommended)**
-Create a `jira_config.json` file:
+Create a `jira_config.json` file (start from `jira_config.example.json`):
 ```json
 {
   "jira_url": "https://company.atlassian.net",
@@ -148,6 +152,11 @@ Create a `jira_config.json` file:
   "board_id": 123
 }
 ```
+
+**Default behavior (to prevent “Jira integration: DISABLED”)**
+
+- If `jira_config.json` exists in the repo root, the scripts will **auto-load it by default**, so Jira ticket creation is enabled without needing to pass `--jira-config`.
+- You can also point to a different file via `JIRA_CONFIG_PATH` (e.g., `JIRA_CONFIG_PATH=/path/to/jira_config.json`).
 
 **Option 2: Environment Variables**
 ```bash

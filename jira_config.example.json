@@ -1,0 +1,9 @@
+{
+  "jira_url": "https://yourcompany.atlassian.net",
+  "email": "your.email@company.com",
+  "api_token": "YOUR_API_TOKEN",
+  "project_key": "PROJECT_KEY",
+  "issue_type": "Task",
+  "assignee_email": "assignee@company.com",
+  "board_id": 123
+}
