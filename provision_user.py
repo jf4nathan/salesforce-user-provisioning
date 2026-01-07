@@ -1331,6 +1331,14 @@ CSV Format:
     parser.add_argument('--jira-config', help='Path to JSON file with Jira configuration')
     
     args = parser.parse_args()
+
+    # Convenience: if a local jira_config.json exists and no Jira options were provided,
+    # auto-load it so Jira ticket creation is enabled by default.
+    # (jira_config.json should be ignored by git; see .gitignore)
+    if not args.jira_config:
+        default_jira_config = os.getenv("JIRA_CONFIG_PATH", "jira_config.json")
+        if os.path.exists(default_jira_config):
+            args.jira_config = default_jira_config
     
     # Validate CSV file exists
     if not os.path.exists(args.csv):

@@ -592,6 +592,13 @@ Examples:
     parser.add_argument('--jira-issue-type', default='Task', help='Jira issue type (default: Task)')
     
     args = parser.parse_args()
+
+    # Convenience: if a local jira_config.json exists and no Jira options were provided,
+    # auto-load it so Jira ticket creation is enabled by default.
+    if not args.jira_config:
+        default_jira_config = os.getenv("JIRA_CONFIG_PATH", "jira_config.json")
+        if os.path.exists(default_jira_config):
+            args.jira_config = default_jira_config
     
     # Initialize Jira client if configured
     jira_client = None

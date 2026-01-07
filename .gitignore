@@ -4,6 +4,8 @@
 
 # Provisioning results (may contain sensitive user IDs and data)
 provisioning_results.json
+provisioning_results_*.json
+provisioning_results.json.backup
 
 # User backup files (contain sensitive user permission data)
 user_backup_*.json
@@ -20,6 +22,7 @@ ENV/
 .venv
 
 # IDE
+.cursor/
 .vscode/
 .idea/
 *.swp
