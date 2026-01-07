@@ -188,6 +188,56 @@ Before provisioning users, the script will:
 
 This helps prevent accidental user provisioning in the wrong environment, especially production. Use `--skip-confirmation` flag to bypass this prompt (useful for automation/CI/CD).
 
+## Gainsight CS Permission Set License Requirement
+
+When assigning the Gainsight CS permission set (`GAINSIGHT__Gainsight_CS`) to a user via API, you **must also assign them the Gainsight package license** via API. The Gainsight CS permission set requires the Gainsight managed package license. Without it, users won't have access to Gainsight features even with the permission set assigned.
+
+### API Implementation
+
+When assigning the Gainsight CS permission set, also create a `UserPackageLicense` record:
+
+```python
+# After assigning permission set, also assign package license
+package_license_id = '050UH00000NFYVZ'  # Gainsight package license ID
+
+user_package_license = {
+    'PackageLicenseId': package_license_id,
+    'UserId': user_id
+}
+
+sf.UserPackageLicense.create(user_package_license)
+```
+
+### Package License Details
+
+- **Package License ID**: `050UH00000NFYVZ`
+- **Permission Set Name**: `Gainsight_CS` (API name: `GAINSIGHT__Gainsight_CS`)
+- **Permission Set ID**: `0PSUH0000006LTB4A2`
+
+### Example Workflow
+
+1. Create user via User API
+2. Assign permission set via `PermissionSetAssignment` API
+3. **If permission set is Gainsight CS, also create `UserPackageLicense` record**
+4. Assign other permission sets/groups as needed
+
+### Checking License Availability
+
+Before assigning the package license, check license availability via API:
+
+```python
+# Query PackageLicense to check available licenses
+query = "SELECT Id, UsedLicenses, AllowedLicenses FROM PackageLicense WHERE Id = '050UH00000NFYVZ'"
+result = sf.query(query)
+
+if result['records']:
+    license_info = result['records'][0]
+    available = license_info['AllowedLicenses'] - license_info['UsedLicenses']
+    print(f"Available Gainsight licenses: {available}")
+```
+
+**Note**: Ensure `UsedLicenses < AllowedLicenses` before assigning the license to a user.
+
 ## Output
 
 The script generates a JSON file (`provisioning_results.json` by default) with:
@@ -278,5 +328,11 @@ python provision_user.py --csv users.csv --org mavenprod
 ## Support
 
 For issues or questions, contact the Salesforce Admin team.
+
+
+
+
+
+
 
 
