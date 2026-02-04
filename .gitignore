@@ -35,6 +35,7 @@ Thumbs.db
 
 # Sensitive config files
 jira_config.json
+gainsight_config.json
 *.key
 *.pem
 

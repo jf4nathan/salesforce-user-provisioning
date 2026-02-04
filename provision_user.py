@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Salesforce User Provisioning Script
-Automates user creation with permission set assignment based on Profile + Role analysis
+Creates users with permission set assignment based on Profile + Role analysis
 
 Usage:
     python provision_user.py --csv users.csv --org mavenprod
@@ -23,9 +23,11 @@ import os
 import sys
 import requests
 import base64
+import time
 from collections import Counter
 from simple_salesforce import Salesforce
 from typing import List, Dict, Set, Optional, Tuple
+from gainsight_client import GainsightClient, create_client_from_config as create_gainsight_client
 
 
 class JiraClient:
@@ -165,13 +167,14 @@ class JiraClient:
         self._sprint_field_id = "customfield_10020"
         return self._sprint_field_id
     
-    def create_ticket(self, summary: str, description: str, **kwargs) -> Optional[Dict]:
+    def create_ticket(self, summary: str, description: str, max_retries: int = 3, **kwargs) -> Optional[Dict]:
         """
-        Create a Jira ticket
+        Create a Jira ticket with retry logic and detailed error logging
         
         Args:
             summary: Ticket summary/title
             description: Ticket description (supports ADF format dict or plain text)
+            max_retries: Maximum number of retry attempts (default: 3)
             **kwargs: Additional fields (e.g., assignee, labels, priority)
         
         Returns:
@@ -261,69 +264,228 @@ class JiraClient:
             "Authorization": self.auth_header
         }
         
-        try:
-            response = requests.post(url, json=issue_data, headers=headers, timeout=10)
-            response.raise_for_status()
-            
-            result = response.json()
-            ticket_key = result.get('key')
-            ticket_id = result.get('id')
-            ticket_url = f"{self.jira_url}/browse/{ticket_key}"
-            
-            # Assign sprint after ticket creation (if available)
-            sprint_id = None
-            if 'sprint_id' in kwargs:
-                sprint_id = kwargs['sprint_id']
-            elif self.board_id:
-                sprint_id = self._get_current_sprint_id()
-            
-            if sprint_id:
-                sprint_field_id = self._get_sprint_custom_field_id()
-                if sprint_field_id:
-                    try:
-                        # Update ticket to add sprint
-                        update_url = f"{self.jira_url}/rest/api/3/issue/{ticket_id}"
-                        update_data = {
-                            "fields": {
-                                sprint_field_id: int(sprint_id)
+        # Create sanitized copy of issue_data for logging (remove sensitive data)
+        log_data = json.loads(json.dumps(issue_data))
+        if 'assignee' in log_data.get('fields', {}):
+            log_data['fields']['assignee'] = {'accountId': '[REDACTED]'}
+        
+        # Retry logic with exponential backoff
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    # Exponential backoff: 1s, 2s, 4s
+                    wait_time = 2 ** (attempt - 1)
+                    print(f"  Retrying Jira ticket creation (attempt {attempt + 1}/{max_retries}) after {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                response = requests.post(url, json=issue_data, headers=headers, timeout=10)
+                response.raise_for_status()
+                
+                result = response.json()
+                ticket_key = result.get('key')
+                ticket_id = result.get('id')
+                ticket_url = f"{self.jira_url}/browse/{ticket_key}"
+                
+                if attempt > 0:
+                    print(f"  SUCCESS: Jira ticket created on retry attempt {attempt + 1}")
+                
+                # Assign sprint after ticket creation (if available)
+                sprint_id = None
+                if 'sprint_id' in kwargs:
+                    sprint_id = kwargs['sprint_id']
+                elif self.board_id:
+                    sprint_id = self._get_current_sprint_id()
+                
+                if sprint_id:
+                    sprint_field_id = self._get_sprint_custom_field_id()
+                    if sprint_field_id:
+                        try:
+                            # Update ticket to add sprint
+                            update_url = f"{self.jira_url}/rest/api/3/issue/{ticket_id}"
+                            update_data = {
+                                "fields": {
+                                    sprint_field_id: int(sprint_id)
+                                }
                             }
-                        }
-                        update_response = requests.put(update_url, json=update_data, headers=headers, timeout=10)
-                        update_response.raise_for_status()
-                        print(f"  SUCCESS: Assigned sprint to ticket")
-                    except Exception as e:
-                        print(f"  WARNING: Could not assign sprint to ticket: {str(e)}")
-            
-            return {
-                'key': ticket_key,
-                'id': ticket_id,
-                'url': ticket_url
+                            update_response = requests.put(update_url, json=update_data, headers=headers, timeout=10)
+                            update_response.raise_for_status()
+                            print(f"  SUCCESS: Assigned sprint to ticket")
+                        except Exception as e:
+                            print(f"  WARNING: Could not assign sprint to ticket: {str(e)}")
+                
+                return {
+                    'key': ticket_key,
+                    'id': ticket_id,
+                    'url': ticket_url
+                }
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                is_last_attempt = (attempt == max_retries - 1)
+                
+                # Detailed error logging
+                print(f"  ERROR: Jira ticket creation failed (attempt {attempt + 1}/{max_retries})")
+                print(f"    URL: {url}")
+                print(f"    Project Key: {self.project_key}")
+                print(f"    Issue Type: {self.issue_type}")
+                print(f"    Summary: {summary}")
+                
+                if hasattr(e, 'response') and e.response is not None:
+                    print(f"    HTTP Status: {e.response.status_code}")
+                    print(f"    Response Headers: {dict(e.response.headers)}")
+                    
+                    try:
+                        error_detail = e.response.json()
+                        print(f"    Error Response: {json.dumps(error_detail, indent=6)}")
+                        
+                        # Log specific field errors if available
+                        if 'errors' in error_detail and error_detail['errors']:
+                            print(f"    Field Errors:")
+                            for field, error_msg in error_detail['errors'].items():
+                                print(f"      - {field}: {error_msg}")
+                    except:
+                        try:
+                            error_text = e.response.text
+                            print(f"    Response Body: {error_text[:500]}")  # First 500 chars
+                        except:
+                            print(f"    Could not parse error response")
+                else:
+                    print(f"    Exception Type: {type(e).__name__}")
+                    print(f"    Exception Message: {str(e)}")
+                
+                # Log request payload (sanitized) for debugging
+                if is_last_attempt:
+                    print(f"    Request Payload (sanitized):")
+                    print(f"    {json.dumps(log_data, indent=6)}")
+                
+                # Don't retry on 4xx errors (client errors) except 429 (rate limit)
+                if hasattr(e, 'response') and e.response is not None:
+                    status_code = e.response.status_code
+                    if 400 <= status_code < 500 and status_code != 429:
+                        print(f"    Skipping retry - client error (4xx) that won't be fixed by retrying")
+                        break
+        
+        # All retries exhausted
+        print(f"  WARNING: Failed to create Jira ticket after {max_retries} attempts")
+        return None
+
+    def add_comment(self, issue_key: str, comment: str, max_retries: int = 3) -> bool:
+        """
+        Add a comment to an existing Jira issue with retry logic and detailed error logging.
+
+        Args:
+            issue_key: Jira issue key (e.g., "SFDC-1001")
+            comment: Comment body (either ADF dict or plain text)
+            max_retries: Maximum number of retry attempts (default: 3)
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        url = f"{self.jira_url}/rest/api/3/issue/{issue_key}/comment"
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": self.auth_header
+        }
+
+        # If comment is already a dict (ADF format), use it directly
+        # Otherwise, wrap plain text in ADF format
+        if isinstance(comment, dict):
+            body_field = comment
+        else:
+            body_field = {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": str(comment)
+                            }
+                        ]
+                    }
+                ]
             }
-        except requests.exceptions.RequestException as e:
-            print(f"  WARNING: Failed to create Jira ticket: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    error_detail = e.response.json()
-                    print(f"  Jira API Error: {error_detail}")
-                except:
-                    print(f"  HTTP Status: {e.response.status_code}")
-            return None
+
+        payload = {"body": body_field}
+
+        # Retry logic with exponential backoff
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    # Exponential backoff: 1s, 2s, 4s
+                    wait_time = 2 ** (attempt - 1)
+                    print(f"  Retrying Jira comment addition (attempt {attempt + 1}/{max_retries}) after {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                response = requests.post(url, json=payload, headers=headers, timeout=10)
+                response.raise_for_status()
+                
+                if attempt > 0:
+                    print(f"  SUCCESS: Jira comment added on retry attempt {attempt + 1}")
+                return True
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                is_last_attempt = (attempt == max_retries - 1)
+                
+                # Detailed error logging
+                print(f"  ERROR: Failed to add Jira comment to {issue_key} (attempt {attempt + 1}/{max_retries})")
+                print(f"    URL: {url}")
+                
+                if hasattr(e, 'response') and e.response is not None:
+                    print(f"    HTTP Status: {e.response.status_code}")
+                    
+                    try:
+                        error_detail = e.response.json()
+                        print(f"    Error Response: {json.dumps(error_detail, indent=6)}")
+                        
+                        # Log specific field errors if available
+                        if 'errors' in error_detail and error_detail['errors']:
+                            print(f"    Field Errors:")
+                            for field, error_msg in error_detail['errors'].items():
+                                print(f"      - {field}: {error_msg}")
+                    except:
+                        try:
+                            error_text = e.response.text
+                            print(f"    Response Body: {error_text[:500]}")  # First 500 chars
+                        except:
+                            print(f"    Could not parse error response")
+                else:
+                    print(f"    Exception Type: {type(e).__name__}")
+                    print(f"    Exception Message: {str(e)}")
+                
+                # Don't retry on 4xx errors (client errors) except 429 (rate limit)
+                if hasattr(e, 'response') and e.response is not None:
+                    status_code = e.response.status_code
+                    if 400 <= status_code < 500 and status_code != 429:
+                        print(f"    Skipping retry - client error (4xx) that won't be fixed by retrying")
+                        break
+        
+        # All retries exhausted
+        print(f"  WARNING: Failed to add Jira comment after {max_retries} attempts")
+        return False
 
 
 class SalesforceUserProvisioner:
-    def __init__(self, org_alias: str, jira_client: Optional[JiraClient] = None):
+    def __init__(self, org_alias: str, jira_client: Optional[JiraClient] = None, 
+                 gainsight_client: Optional[GainsightClient] = None):
         """
         Initialize Salesforce connection using sf CLI
         
         Args:
             org_alias: Salesforce org alias
             jira_client: Optional Jira client for ticket creation
+            gainsight_client: Optional Gainsight client for user provisioning
         """
         self.org_alias = org_alias
         self.org_info = self._get_org_info(org_alias)
         self.sandbox_name = self._extract_sandbox_name()
         self.sf = self._get_sf_connection()
         self.jira_client = jira_client
+        self.gainsight_client = gainsight_client
     
     def _get_org_info(self, org_alias: str) -> Dict:
         """Get org information using sf CLI"""
@@ -721,10 +883,31 @@ class SalesforceUserProvisioner:
             if permission_data.get('permission_sets'):
                 assigned_permission_set_names = self.assign_permission_sets(user_id, permission_data['permission_sets'])
             
-            # Create Jira ticket if configured
+            # Create or update Jira ticket if configured
             if self.jira_client:
                 user_link = self.get_user_link(user_id)
-                self.create_jira_ticket(user_data, user_id, user_link, assigned_group_names, assigned_permission_set_names)
+                jira_key = (user_data.get('JiraKey') or '').strip()
+                if jira_key:
+                    self.update_existing_jira_ticket(
+                        issue_key=jira_key,
+                        user_data=user_data,
+                        user_id=user_id,
+                        user_link=user_link,
+                        assigned_group_names=assigned_group_names,
+                        assigned_permission_set_names=assigned_permission_set_names,
+                    )
+                else:
+                    self.create_jira_ticket(
+                        user_data,
+                        user_id,
+                        user_link,
+                        assigned_group_names,
+                        assigned_permission_set_names,
+                    )
+            
+            # Provision Gainsight user if profile is Client Success
+            if self.gainsight_client and user_data.get('Profile', '').lower() == 'client success':
+                self._provision_gainsight_user(user_data)
             
             # Note: Password reset must be done manually in Salesforce UI
             print(f"  NOTE: Please reset password manually in Setup > Users > Users")
@@ -733,6 +916,50 @@ class SalesforceUserProvisioner:
             
         except Exception as e:
             print(f"  ERROR: Error creating user: {str(e)}")
+            return None
+    
+    def _provision_gainsight_user(self, user_data: Dict) -> Optional[Dict]:
+        """
+        Provision user in Gainsight for Client Success profile users
+        
+        Args:
+            user_data: User data dict with Email, FirstName, LastName, TimeZone
+        
+        Returns:
+            Gainsight user dict if successful, None otherwise
+        """
+        if not self.gainsight_client:
+            return None
+        
+        email = user_data.get('Email', '')
+        first_name = user_data.get('FirstName', '')
+        last_name = user_data.get('LastName', '')
+        timezone = user_data.get('TimeZone', 'America/New_York')
+        
+        print(f"  Provisioning Gainsight user for: {email}")
+        
+        try:
+            # Check if user already exists in Gainsight
+            existing_user = self.gainsight_client.search_user_by_email(email)
+            if existing_user:
+                print(f"  INFO: User already exists in Gainsight (ID: {existing_user.get('id')})")
+                return existing_user
+            
+            # Create user with Full license and client resources group
+            result = self.gainsight_client.create_user(
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                timezone=timezone,
+                license_type="Full",
+                groups=[{"display": "client resources"}]
+            )
+            
+            print(f"  SUCCESS: Gainsight user created (ID: {result.get('id')})")
+            return result
+            
+        except Exception as e:
+            print(f"  WARNING: Failed to provision Gainsight user: {str(e)}")
             return None
     
     def assign_permission_set_groups(self, user_id: str, permission_set_group_ids: List[str]):
@@ -944,6 +1171,87 @@ class SalesforceUserProvisioner:
         user_full_name = f"{user_data['FirstName']} {user_data['LastName']}"
         summary = f"Salesforce Access for {user_full_name}"
         
+        # Build description using Atlassian Document Format (ADF) for proper formatting
+        description_content = [
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "Provision Salesforce user for: "},
+                    {"type": "text", "text": user_full_name, "marks": [{"type": "strong"}]}
+                ]
+            }
+        ] + self._build_jira_description_content(
+            user_data, user_id, user_link, assigned_group_names, assigned_permission_set_names
+        )
+        
+        description = {
+            "type": "doc",
+            "version": 1,
+            "content": description_content
+        }
+        
+        # Use assignee from config if available
+        ticket_kwargs = {
+            'labels': ['user-provisioning', 'salesforce']
+        }
+        
+        # Add assignee if configured
+        if self.jira_client.assignee_email:
+            ticket_kwargs['assignee'] = self.jira_client.assignee_email
+        
+        ticket = self.jira_client.create_ticket(
+            summary=summary,
+            description=description,
+            **ticket_kwargs
+        )
+        
+        if ticket:
+            print(f"  SUCCESS: Jira ticket created: {ticket['key']}")
+            print(f"  Ticket URL: {ticket['url']}")
+        else:
+            print(f"  WARNING: Jira ticket creation failed (user still created successfully)")
+
+    def update_existing_jira_ticket(self, issue_key: str, user_data: Dict, user_id: str, user_link: str,
+                                    assigned_group_names: List[str] = None, assigned_permission_set_names: List[str] = None) -> bool:
+        """Update an existing Jira issue by adding a comment with the same details we normally include in a ticket."""
+        if not self.jira_client:
+            return False
+
+        if assigned_group_names is None:
+            assigned_group_names = []
+        if assigned_permission_set_names is None:
+            assigned_permission_set_names = []
+
+        user_full_name = f"{user_data['FirstName']} {user_data['LastName']}"
+
+        # Reuse the same ADF structure we use for ticket description, but as a comment body.
+        # We'll prepend a short header so it's clear this is an automated update.
+        description_adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Provisioning update for: "},
+                        {"type": "text", "text": user_full_name, "marks": [{"type": "strong"}]}
+                    ]
+                },
+                {"type": "paragraph"},
+            ] + (self._build_jira_description_content(user_data, user_id, user_link, assigned_group_names, assigned_permission_set_names))
+        }
+
+        ok = self.jira_client.add_comment(issue_key, description_adf)
+        if ok:
+            print(f"  SUCCESS: Updated Jira ticket (comment added): {issue_key}")
+            print(f"  Ticket URL: {self.jira_client.jira_url}/browse/{issue_key}")
+        else:
+            print(f"  WARNING: Failed to update Jira ticket: {issue_key}")
+        return ok
+
+    def _build_jira_description_content(self, user_data: Dict, user_id: str, user_link: str,
+                                        assigned_group_names: List[str], assigned_permission_set_names: List[str]) -> List[Dict]:
+        """Build the ADF content array used in Jira descriptions/comments (excluding doc wrapper)."""
         # Build permission sets list items
         permission_set_items = []
         for group_name in assigned_group_names:
@@ -966,16 +1274,9 @@ class SalesforceUserProvisioner:
                     ]
                 }]
             })
-        
+
         # Build description using Atlassian Document Format (ADF) for proper formatting
         description_content = [
-            {
-                "type": "paragraph",
-                "content": [
-                    {"type": "text", "text": "Provision Salesforce user for: "},
-                    {"type": "text", "text": user_full_name, "marks": [{"type": "strong"}]}
-                ]
-            },
             {"type": "paragraph"},  # Empty line
             {
                 "type": "heading",
@@ -1161,33 +1462,8 @@ class SalesforceUserProvisioner:
                 ]
             }
         ]
-        
-        description = {
-            "type": "doc",
-            "version": 1,
-            "content": description_content
-        }
-        
-        # Use assignee from config if available
-        ticket_kwargs = {
-            'labels': ['user-provisioning', 'salesforce']
-        }
-        
-        # Add assignee if configured
-        if self.jira_client.assignee_email:
-            ticket_kwargs['assignee'] = self.jira_client.assignee_email
-        
-        ticket = self.jira_client.create_ticket(
-            summary=summary,
-            description=description,
-            **ticket_kwargs
-        )
-        
-        if ticket:
-            print(f"  SUCCESS: Jira ticket created: {ticket['key']}")
-            print(f"  Ticket URL: {ticket['url']}")
-        else:
-            print(f"  WARNING: Jira ticket creation failed (user still created successfully)")
+
+        return description_content
     
     def provision_users_from_csv(self, csv_file: str, permission_set_threshold: float = 0.5):
         """Main method to provision users from CSV file"""
@@ -1411,11 +1687,25 @@ CSV Format:
         else:
             print("Jira integration: DISABLED (no configuration provided)")
     
+    # Initialize Gainsight client if configured
+    # Auto-load gainsight_config.json if it exists
+    gainsight_client = None
+    default_gainsight_config = os.getenv("GAINSIGHT_CONFIG_PATH", "gainsight_config.json")
+    if os.path.exists(default_gainsight_config):
+        try:
+            gainsight_client = create_gainsight_client(default_gainsight_config)
+            print("Gainsight integration: ENABLED (for Client Success users)")
+        except Exception as e:
+            print(f"WARNING: Failed to load Gainsight config from {default_gainsight_config}: {e}")
+            print("Continuing without Gainsight integration...")
+    else:
+        print("Gainsight integration: DISABLED (no gainsight_config.json found)")
+    
     print()
     
     # Initialize provisioner
     try:
-        provisioner = SalesforceUserProvisioner(args.org, jira_client)
+        provisioner = SalesforceUserProvisioner(args.org, jira_client, gainsight_client)
     except SystemExit:
         sys.exit(1)
     
