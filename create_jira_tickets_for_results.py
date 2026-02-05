@@ -16,61 +16,10 @@ import os
 import sys
 from typing import Dict, List, Optional
 
-# Import classes from provision_user.py
+# Import classes from project modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from provision_user import SalesforceUserProvisioner, JiraClient  # noqa: E402
-
-
-def _load_jira_client(args: argparse.Namespace) -> Optional[JiraClient]:
-    # Convenience: if a local jira_config.json exists and no Jira options were provided,
-    # auto-load it so Jira ticket creation is enabled by default.
-    if not args.jira_config:
-        default_jira_config = os.getenv("JIRA_CONFIG_PATH", "jira_config.json")
-        if os.path.exists(default_jira_config):
-            args.jira_config = default_jira_config
-
-    if args.jira_config:
-        with open(args.jira_config, "r", encoding="utf-8") as f:
-            jira_config = json.load(f)
-        return JiraClient(
-            jira_url=jira_config["jira_url"],
-            email=jira_config["email"],
-            api_token=jira_config["api_token"],
-            project_key=jira_config["project_key"],
-            issue_type=jira_config.get("issue_type", "Task"),
-            assignee_email=jira_config.get("assignee_email"),
-            board_id=jira_config.get("board_id"),
-        )
-
-    # Command-line args
-    if args.jira_url and args.jira_email and args.jira_token and args.jira_project:
-        return JiraClient(
-            jira_url=args.jira_url,
-            email=args.jira_email,
-            api_token=args.jira_token,
-            project_key=args.jira_project,
-            issue_type=args.jira_issue_type,
-            assignee_email=args.jira_assignee_email,
-            board_id=args.jira_board_id,
-        )
-
-    # Env vars
-    jira_url = os.getenv("JIRA_URL")
-    jira_email = os.getenv("JIRA_EMAIL")
-    jira_token = os.getenv("JIRA_API_TOKEN")
-    jira_project = os.getenv("JIRA_PROJECT_KEY")
-    if jira_url and jira_email and jira_token and jira_project:
-        return JiraClient(
-            jira_url=jira_url,
-            email=jira_email,
-            api_token=jira_token,
-            project_key=jira_project,
-            issue_type=os.getenv("JIRA_ISSUE_TYPE", "Task"),
-            assignee_email=os.getenv("JIRA_ASSIGNEE_EMAIL"),
-            board_id=int(os.getenv("JIRA_BOARD_ID")) if os.getenv("JIRA_BOARD_ID") else None,
-        )
-
-    return None
+from provision_user import SalesforceUserProvisioner  # noqa: E402
+from jira_client import load_jira_client_from_args, add_jira_args  # noqa: E402
 
 
 def _get_assigned_permission_set_names(provisioner: SalesforceUserProvisioner, user_id: str) -> List[str]:
@@ -93,13 +42,8 @@ def main() -> None:
     parser.add_argument("--org", required=True, help="Salesforce org alias (e.g., mavenprod)")
     parser.add_argument("--results", required=True, help="Provisioning results JSON file (e.g., provisioning_results_20260107.json)")
 
-    # Jira options (mirrors provision_user.py)
-    parser.add_argument("--jira-url", help="Jira instance URL (e.g., https://company.atlassian.net)")
-    parser.add_argument("--jira-email", help="Jira user email for API authentication")
-    parser.add_argument("--jira-token", help="Jira API token")
-    parser.add_argument("--jira-project", help="Jira project key (e.g., PROJ)")
-    parser.add_argument("--jira-issue-type", default="Task", help="Jira issue type (default: Task)")
-    parser.add_argument("--jira-config", help="Path to JSON file with Jira configuration")
+    # Jira options
+    add_jira_args(parser)
     parser.add_argument("--jira-assignee-email", help="Assignee email (optional; overrides config/env)")
     parser.add_argument("--jira-board-id", type=int, help="Board ID for sprint assignment (optional)")
 
@@ -108,7 +52,7 @@ def main() -> None:
     if not os.path.exists(args.results):
         raise SystemExit(f"ERROR: Results JSON not found: {args.results}")
 
-    jira_client = _load_jira_client(args)
+    jira_client = load_jira_client_from_args(args, verbose=False)
     if not jira_client:
         raise SystemExit(
             "ERROR: Jira is not configured. Provide --jira-config jira_config.json or set JIRA_* env vars."
@@ -143,9 +87,7 @@ def main() -> None:
             # so group names are usually empty. Still pass through for completeness.
             assigned_group_names: List[str] = []
 
-            # Create ticket
-            ticket = provisioner.jira_client.create_ticket  # type: ignore[union-attr]
-            # Prefer the existing ADF builder in provisioner.create_jira_ticket
+            # Use the existing ADF builder in provisioner.create_jira_ticket
             provisioner.create_jira_ticket(
                 user_data=user_data,
                 user_id=user_id,
@@ -174,4 +116,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
