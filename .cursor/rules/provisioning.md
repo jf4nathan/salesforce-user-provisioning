@@ -18,7 +18,7 @@ The `temp/` folder is gitignored and will not be committed to version control.
 # temp/new_user.csv
 
 # Run provisioning with temp file
-python provision_user.py --csv temp/new_user.csv --org mavenprod --output temp/results.json
+python scripts/core/provision_user.py --csv temp/new_user.csv --org mavenprod --output temp/results.json
 ```
 
 ## PowerShell Command Syntax
@@ -49,9 +49,9 @@ cd path; python script.py
 - Different email formats: `firstname.lastname` vs `firstinitial.lastname` vs other patterns
 
 **Best Practice**:
-1. **First attempt**: Try to verify manager email using `check_manager.py`:
+1. **First attempt**: Try to verify manager email using `scripts/helpers/check_manager.py`:
    ```bash
-   python check_manager.py --org mavenprod manager.email@mavenclinic.com
+   python scripts/helpers/check_manager.py --org mavenprod manager.email@mavenclinic.com
    ```
 
 2. **If email lookup fails**: Query Salesforce by manager name instead:
@@ -75,7 +75,7 @@ cd path; python script.py
 **Example Workflow**:
 ```bash
 # Step 1: Try email lookup
-python check_manager.py --org mavenprod steph.dagostino@mavenclinic.com
+python scripts/helpers/check_manager.py --org mavenprod steph.dagostino@mavenclinic.com
 
 # Step 2: If that fails, query by name (handles Steph/Stephanie variations)
 sf data query --query "SELECT Id, FirstName, LastName, Email FROM User WHERE (FirstName LIKE 'Steph%' OR FirstName = 'Stephanie') AND LastName = 'Dagostino' AND IsActive = true" --target-org mavenprod
@@ -91,21 +91,21 @@ sf data query --query "SELECT Id, FirstName, LastName, Email FROM User WHERE (Fi
 
 **Best Practice**:
 - Query Salesforce to find exact email addresses rather than assuming formats
-- Use helper scripts like `query_client_success_users.py` or `check_manager.py` to verify emails
+- Use helper scripts like `scripts/helpers/query_client_success_users.py` or `scripts/helpers/check_manager.py` to verify emails
 - When creating CSV files, verify all email addresses (user, manager, mimic user) exist in Salesforce first
 
 ## User Provisioning Workflow
 
 **Recommended Steps**:
 1. **Verify mimic user exists**: Check that the MimicUser email exists and has the desired permissions
-   - Use `check_manager.py` or query Salesforce if email format is uncertain
+   - Use `scripts/helpers/check_manager.py` or query Salesforce if email format is uncertain
 2. **Verify manager exists**: 
-   - **First**: Try `check_manager.py` with the expected email
+   - **First**: Try `scripts/helpers/check_manager.py` with the expected email
    - **If email lookup fails**: Query Salesforce by manager name (see Manager Email Verification section)
    - Handle name variations (Steph/Stephanie, maiden names, etc.)
    - Update CSV with the correct manager email once found
 3. **Create CSV file**: Use verified email addresses for all fields
-4. **Run provisioning script**: Execute `provision_user.py` with appropriate org alias
+4. **Run provisioning script**: Execute `scripts/core/provision_user.py` with appropriate org alias
 5. **Verify results**: Check the provisioning results JSON and verify user was created correctly
    - If manager wasn't assigned, manually update in Salesforce UI
 6. **Reset password**: Manually reset password in Salesforce UI
@@ -116,7 +116,7 @@ Before any provisioning/deprovisioning action:
 - Confirm target org alias and org details before execution
 - Require explicit confirmation for production-like orgs unless automation intentionally uses `--skip-confirmation`
 - Never deploy or perform irreversible production changes without explicit user instruction
-- Prefer dry-run/review steps first when available (`deprovision_user.py --dry-run`)
+- Prefer dry-run/review steps first when available (`scripts/core/deprovision_user.py --dry-run`)
 
 ## Error Handling
 
@@ -143,9 +143,9 @@ Before any provisioning/deprovisioning action:
 
 ## Code Architecture: Adding New Salesforce Queries
 
-**Pattern**: Use shared utilities from `sf_utils.py` for all Salesforce query scripts.
+**Pattern**: Use shared utilities from `scripts/core/sf_utils.py` for all Salesforce query scripts.
 
-**Available utilities in `sf_utils.py`**:
+**Available utilities in `scripts/core/sf_utils.py`**:
 - `get_org_info(org_alias)` — Get org info dict from sf CLI
 - `get_sf_connection(org_alias)` — Get authenticated Salesforce connection
 - `extract_sandbox_name(org_info)` — Extract sandbox name from org info
@@ -156,7 +156,7 @@ Before any provisioning/deprovisioning action:
 
 1. **Import shared utilities** — Don't duplicate `get_org_info()` or connection code:
    ```python
-   from sf_utils import get_sf_connection, print_user_details
+   from scripts.core.sf_utils import get_sf_connection, print_user_details
    
    def my_query(org_alias: str):
        sf = get_sf_connection(org_alias)
@@ -164,10 +164,10 @@ Before any provisioning/deprovisioning action:
    ```
 
 2. **Create standalone scripts for distinct query types** — Each script should have a single purpose:
-   - `check_manager.py` — Find user by email
-   - `check_vps.py` — Find VPs in a profile
-   - `check_gainsight_license.py` — Check license assignment
-   - `query_client_success_users.py` — Query users by profile/department
+   - `scripts/helpers/check_manager.py` — Find user by email
+   - `scripts/helpers/check_vps.py` — Find VPs in a profile
+   - `scripts/helpers/check_gainsight_license.py` — Check license assignment
+   - `scripts/helpers/query_client_success_users.py` — Query users by profile/department
 
 3. **Only modify existing scripts** if extending their specific functionality
 
@@ -177,7 +177,9 @@ Before any provisioning/deprovisioning action:
    """Brief description of what this script does."""
    
    import argparse
-   from sf_utils import get_sf_connection
+   import os, sys
+   sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+   from scripts.core.sf_utils import get_sf_connection
    
    def main_function(org_alias: str, ...):
        sf = get_sf_connection(org_alias)
@@ -205,7 +207,7 @@ Before any provisioning/deprovisioning action:
 **Existing query scripts**:
 | Script | Purpose |
 |--------|---------|
-| `check_manager.py` | Find user by email, show profile/role |
-| `check_vps.py` | Find VPs in Client Success |
-| `check_gainsight_license.py` | Check Gainsight license for user |
-| `query_client_success_users.py` | Query all Client Success users |
+| `scripts/helpers/check_manager.py` | Find user by email, show profile/role |
+| `scripts/helpers/check_vps.py` | Find VPs in Client Success |
+| `scripts/helpers/check_gainsight_license.py` | Check Gainsight license for user |
+| `scripts/helpers/query_client_success_users.py` | Query all Client Success users |

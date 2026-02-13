@@ -20,12 +20,33 @@ User provisioning script for Salesforce that creates users and assigns permissio
 
 ## Project Structure
 
-- `scripts/core/` - Core provisioning/deprovisioning logic and shared Salesforce utilities
-- `scripts/helpers/` - Query/verification helper scripts
-- `scripts/integrations/` - Jira and Gainsight integration clients/helpers
-- `templates/` - Reusable input templates (for example `templates/users_template.csv`)
-- `config/examples/` - Example config files (`jira_config.example.json`, `gainsight_config.example.json`)
-- Root-level script files remain as compatibility wrappers so existing commands still work
+```
+├── scripts/
+│   ├── core/               # Main provisioning/deprovisioning scripts + shared utils
+│   │   ├── provision_user.py
+│   │   ├── deprovision_user.py
+│   │   ├── update_user_permissions.py
+│   │   └── sf_utils.py
+│   ├── helpers/            # Query & verification helpers
+│   │   ├── check_gainsight_license.py
+│   │   ├── check_manager.py
+│   │   ├── check_vps.py
+│   │   └── query_client_success_users.py
+│   └── integrations/       # Jira & Gainsight clients
+│       ├── jira_client.py
+│       ├── gainsight_client.py
+│       ├── create_jira_ticket.py
+│       ├── create_jira_tickets_for_results.py
+│       └── update_jira_issue_with_provisioning.py
+├── config/
+│   └── examples/           # Example config files
+├── templates/              # CSV templates
+├── temp/                   # Working/output files (gitignored)
+├── requirements.txt
+└── README.md
+```
+
+All scripts should be run from the **project root** directory.
 
 ## Prerequisites
 
@@ -53,13 +74,13 @@ Before provisioning, it's recommended to check existing users with similar title
 
 ```bash
 # Query users in a specific department/profile
-python query_client_success_users.py --org mavenprod
+python scripts/helpers/query_client_success_users.py --org mavenprod
 
 # Check a manager's Profile and Role
-python check_manager.py --org mavenprod manager.email@mavenclinic.com
+python scripts/helpers/check_manager.py --org mavenprod manager.email@mavenclinic.com
 
 # Check for VP-level users
-python check_vps.py --org mavenprod
+python scripts/helpers/check_vps.py --org mavenprod
 ```
 
 **Best Practice Workflow:**
@@ -95,10 +116,10 @@ python check_vps.py --org mavenprod
 2. **Run the script**:
    ```bash
    # Without Jira tickets:
-   python provision_user.py --csv users.csv --org mavenprod
+   python scripts/core/provision_user.py --csv users.csv --org mavenprod
 
    # With Jira tickets (recommended):
-   python provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
+   python scripts/core/provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
    ```
 
 3. **Reset passwords manually**:
@@ -111,16 +132,16 @@ python check_vps.py --org mavenprod
 
 ### Basic Usage
 ```bash
-python provision_user.py --csv users.csv --org mavenprod
+python scripts/core/provision_user.py --csv users.csv --org mavenprod
 ```
 
 ### With Jira Integration
 ```bash
 # Using Jira config file
-python provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
+python scripts/core/provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
 
 # Or using command line arguments
-python provision_user.py --csv users.csv --org mavenprod \
+python scripts/core/provision_user.py --csv users.csv --org mavenprod \
   --jira-url https://company.atlassian.net \
   --jira-email your.email@company.com \
   --jira-token YOUR_API_TOKEN \
@@ -130,18 +151,18 @@ python provision_user.py --csv users.csv --org mavenprod \
 ### Custom Permission Set Threshold
 ```bash
 # Assign permission sets that appear in 60%+ of similar users
-python provision_user.py --csv users.csv --org mavenprod --threshold 0.6
+python scripts/core/provision_user.py --csv users.csv --org mavenprod --threshold 0.6
 ```
 
 ### Custom Output File
 ```bash
-python provision_user.py --csv users.csv --org mavenprod --output my_results.json
+python scripts/core/provision_user.py --csv users.csv --org mavenprod --output my_results.json
 ```
 
 ### Skip Confirmation Prompt
 ```bash
 # Skip the org confirmation prompt (useful for automation/CI/CD)
-python provision_user.py --csv users.csv --org mavenprod --skip-confirmation
+python scripts/core/provision_user.py --csv users.csv --org mavenprod --skip-confirmation
 ```
 
 ## CSV Format
@@ -254,22 +275,22 @@ The `gainsight_client.py` script can also be used independently for Gainsight us
 
 ```bash
 # Search for a user
-python gainsight_client.py search --email user@company.com
+python scripts/integrations/gainsight_client.py search --email user@company.com
 
 # Create a user
-python gainsight_client.py create --email new.user@company.com --title "CSM"
+python scripts/integrations/gainsight_client.py create --email new.user@company.com --title "CSM"
 
 # Create user mimicking another user's settings
-python gainsight_client.py create --email new.user@company.com --mimic existing.user@company.com
+python scripts/integrations/gainsight_client.py create --email new.user@company.com --mimic existing.user@company.com
 
 # List all groups
-python gainsight_client.py list-groups
+python scripts/integrations/gainsight_client.py list-groups
 
 # Add user to a group
-python gainsight_client.py add-to-group --user-id <ID> --group-name "Support"
+python scripts/integrations/gainsight_client.py add-to-group --user-id <ID> --group-name "Support"
 
 # Deactivate a user
-python gainsight_client.py deactivate --email user@company.com
+python scripts/integrations/gainsight_client.py deactivate --email user@company.com
 ```
 
 ## How It Works
@@ -353,7 +374,7 @@ The provisioning script **automatically assigns the Gainsight package license** 
 After provisioning, verify the Gainsight license was assigned correctly:
 
 ```bash
-python check_gainsight_license.py --org mavenprod user.email@mavenclinic.com
+python scripts/helpers/check_gainsight_license.py --org mavenprod user.email@mavenclinic.com
 ```
 
 This script will show:
@@ -392,16 +413,16 @@ The `deprovision_user.py` script deactivates Salesforce users and removes their 
 
 ```bash
 # Deprovision by names (interactive, prompts for confirmation)
-python deprovision_user.py --org mavenprod --names "John Doe, Jane Smith"
+python scripts/core/deprovision_user.py --org mavenprod --names "John Doe, Jane Smith"
 
 # Deprovision from a CSV file
-python deprovision_user.py --org mavenprod --csv temp/deprovisioning_list.csv
+python scripts/core/deprovision_user.py --org mavenprod --csv temp/deprovisioning_list.csv
 
 # Dry run - preview what would happen without making changes
-python deprovision_user.py --org mavenprod --names "John Doe" --dry-run
+python scripts/core/deprovision_user.py --org mavenprod --names "John Doe" --dry-run
 
 # Skip per-user confirmation prompts
-python deprovision_user.py --org mavenprod --names "John Doe, Jane Smith" --skip-confirmation
+python scripts/core/deprovision_user.py --org mavenprod --names "John Doe, Jane Smith" --skip-confirmation
 ```
 
 ### Deprovisioning CSV Format
@@ -445,7 +466,7 @@ Queries all users in Client Success (by Profile, Title, or Department) and group
 
 **Usage:**
 ```bash
-python query_client_success_users.py --org mavenprod
+python scripts/helpers/query_client_success_users.py --org mavenprod
 ```
 
 **Output:** Shows all Client Success users grouped by Profile+Role combination, making it easy to see what roles are used for different positions.
@@ -456,7 +477,7 @@ Finds a user by email and displays their Profile, Role, Title, and Department. U
 
 **Usage:**
 ```bash
-python check_manager.py --org mavenprod manager.email@mavenclinic.com
+python scripts/helpers/check_manager.py --org mavenprod manager.email@mavenclinic.com
 ```
 
 ### `check_vps.py`
@@ -465,7 +486,7 @@ Searches for Vice Presidents in a specific profile to see what roles they use. H
 
 **Usage:**
 ```bash
-python check_vps.py --org mavenprod
+python scripts/helpers/check_vps.py --org mavenprod
 ```
 
 ### `check_gainsight_license.py`
@@ -474,7 +495,7 @@ Verifies that a user has the Gainsight package license and Gainsight CS permissi
 
 **Usage:**
 ```bash
-python check_gainsight_license.py --org mavenprod user.email@mavenclinic.com
+python scripts/helpers/check_gainsight_license.py --org mavenprod user.email@mavenclinic.com
 ```
 
 ### `deprovision_user.py`
@@ -483,8 +504,8 @@ Deactivates Salesforce users and removes their package license assignments. Acce
 
 **Usage:**
 ```bash
-python deprovision_user.py --org mavenprod --names "John Doe, Jane Smith"
-python deprovision_user.py --org mavenprod --csv temp/deprovisioning_list.csv --dry-run
+python scripts/core/deprovision_user.py --org mavenprod --names "John Doe, Jane Smith"
+python scripts/core/deprovision_user.py --org mavenprod --csv temp/deprovisioning_list.csv --dry-run
 ```
 
 ### `gainsight_client.py`
@@ -494,16 +515,16 @@ Standalone Gainsight SCIM API client for user provisioning and permission manage
 **Usage:**
 ```bash
 # Search for a user
-python gainsight_client.py search --email user@company.com
+python scripts/integrations/gainsight_client.py search --email user@company.com
 
 # Create a user with specific settings
-python gainsight_client.py create --email new.user@company.com --license-type Full --groups "client resources"
+python scripts/integrations/gainsight_client.py create --email new.user@company.com --license-type Full --groups "client resources"
 
 # List all groups
-python gainsight_client.py list-groups
+python scripts/integrations/gainsight_client.py list-groups
 
 # Deactivate a user
-python gainsight_client.py deactivate --email user@company.com
+python scripts/integrations/gainsight_client.py deactivate --email user@company.com
 ```
 
 ## Output
@@ -556,7 +577,7 @@ Example output:
 
 ### Gainsight license not assigned
 - Verify the Gainsight CS permission set was assigned successfully
-- Check license availability: `python check_gainsight_license.py --org mavenprod user.email@mavenclinic.com`
+- Check license availability: `python scripts/helpers/check_gainsight_license.py --org mavenprod user.email@mavenclinic.com`
 - The script automatically assigns the license when Gainsight CS permission set is detected, but you can verify manually
 - If license assignment failed, check if licenses are available (UsedLicenses < AllowedLicenses)
 
@@ -586,25 +607,25 @@ Example output:
 ### Provision a single user
 ```bash
 # Create users.csv with one user
-python provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
+python scripts/core/provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
 ```
 
 ### Provision multiple users
 ```bash
 # Create users.csv with multiple users
-python provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
+python scripts/core/provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
 ```
 
 ### Provision to sandbox
 ```bash
 # Provision to sandbox
-python provision_user.py --csv users.csv --org qa --jira-config jira_config.json
+python scripts/core/provision_user.py --csv users.csv --org qa --jira-config jira_config.json
 ```
 
 ### Provision without Jira
 ```bash
 # Skip Jira ticket creation
-python provision_user.py --csv users.csv --org mavenprod
+python scripts/core/provision_user.py --csv users.csv --org mavenprod
 ```
 
 ### Complete Workflow Example
@@ -614,10 +635,10 @@ Here's a complete example workflow for provisioning a new user:
 **Step 1: Research existing users**
 ```bash
 # Query users in the same department
-python query_client_success_users.py --org mavenprod
+python scripts/helpers/query_client_success_users.py --org mavenprod
 
 # Check manager's configuration
-python check_manager.py --org mavenprod doreen.bortel@mavenclinic.com
+python scripts/helpers/check_manager.py --org mavenprod doreen.bortel@mavenclinic.com
 ```
 
 **Step 2: Create CSV file**
@@ -628,12 +649,12 @@ Solongo,Guzman,solongo.guzman@mavenclinic.com,solongo.guzman@mavenclinic.com,Vic
 
 **Step 3: Provision user**
 ```bash
-python provision_user.py --csv solongo_guzman.csv --org mavenprod
+python scripts/core/provision_user.py --csv solongo_guzman.csv --org mavenprod
 ```
 
 **Step 4: Verify Gainsight license (if applicable)**
 ```bash
-python check_gainsight_license.py --org mavenprod solongo.guzman@mavenclinic.com
+python scripts/helpers/check_gainsight_license.py --org mavenprod solongo.guzman@mavenclinic.com
 ```
 
 **Step 5: Reset password manually in Salesforce UI**

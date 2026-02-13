@@ -23,8 +23,9 @@ import sys
 from datetime import datetime
 from simple_salesforce import Salesforce
 from typing import List, Dict, Optional, Tuple
-from sf_utils import get_org_info, get_sf_connection, format_user_record, print_user_details
-from gainsight_client import GainsightClient, create_client_from_config as create_gainsight_client
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from scripts.core.sf_utils import get_org_info, get_sf_connection, format_user_record, print_user_details
+from scripts.integrations.gainsight_client import GainsightClient, create_client_from_config as create_gainsight_client
 
 
 class SalesforceUserDeprovisioner:

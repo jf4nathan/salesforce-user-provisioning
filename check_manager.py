@@ -1,5 +1,0 @@
-from runpy import run_path
-from pathlib import Path
-
-if __name__ == "__main__":
-    run_path(str(Path(__file__).parent / "scripts/helpers/check_manager.py"), run_name="__main__")

@@ -22,9 +22,10 @@ import sys
 from collections import Counter
 from simple_salesforce import Salesforce
 from typing import List, Dict, Set, Optional, Tuple
-from gainsight_client import GainsightClient, create_client_from_config as create_gainsight_client
-from jira_client import JiraClient, load_jira_client_from_args, add_jira_args
-from sf_utils import get_org_info, extract_sandbox_name
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from scripts.integrations.gainsight_client import GainsightClient, create_client_from_config as create_gainsight_client
+from scripts.integrations.jira_client import JiraClient, load_jira_client_from_args, add_jira_args
+from scripts.core.sf_utils import get_org_info, extract_sandbox_name
 
 
 

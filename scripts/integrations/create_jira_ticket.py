@@ -6,8 +6,9 @@ import json
 import sys
 import os
 import argparse
-from provision_user import SalesforceUserProvisioner
-from jira_client import load_jira_client_from_args, add_jira_args
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from scripts.core.provision_user import SalesforceUserProvisioner
+from scripts.integrations.jira_client import load_jira_client_from_args, add_jira_args
 
 def main():
     parser = argparse.ArgumentParser(description='Create Jira ticket for existing user')
