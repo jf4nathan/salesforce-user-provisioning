@@ -18,6 +18,15 @@ User provisioning script for Salesforce that creates users and assigns permissio
 - ✅ **Helper Scripts** - Query existing users, check managers, verify licenses before/after provisioning
 - ✅ **User Deprovisioning** - Deactivate users and remove package license assignments in bulk
 
+## Project Structure
+
+- `scripts/core/` - Core provisioning/deprovisioning logic and shared Salesforce utilities
+- `scripts/helpers/` - Query/verification helper scripts
+- `scripts/integrations/` - Jira and Gainsight integration clients/helpers
+- `templates/` - Reusable input templates (for example `templates/users_template.csv`)
+- `config/examples/` - Example config files (`jira_config.example.json`, `gainsight_config.example.json`)
+- Root-level script files remain as compatibility wrappers so existing commands still work
+
 ## Prerequisites
 
 1. **Salesforce CLI** installed and authenticated
@@ -64,7 +73,7 @@ python check_vps.py --org mavenprod
 - Most common: `Profile: Client Success, Role: Client Success Lead` (used by Directors/Managers)
 - Alternative: Use MimicUser to copy from another VP or Director
 
-1. **Prepare your CSV file** (use `users_template.csv` as a template):
+1. **Prepare your CSV file** (use `templates/users_template.csv` as a template):
    **Option 1: Specify Profile and Role manually**
    ```csv
    FirstName,LastName,Email,Username,Title,ManagerEmail,Profile,Role,TimeZone,MimicUser
@@ -171,7 +180,7 @@ The script can automatically create Jira tickets for each provisioned user. Tick
 ### Jira Configuration
 
 **Option 1: JSON Config File (Recommended)**
-Create a `jira_config.json` file (start from `jira_config.example.json`):
+Create a `jira_config.json` file (start from `config/examples/jira_config.example.json`):
 ```json
 {
   "jira_url": "https://company.atlassian.net",
@@ -215,7 +224,7 @@ The script automatically provisions users in Gainsight when the Salesforce profi
 
 ### Gainsight Configuration
 
-Create a `gainsight_config.json` file (start from `gainsight_config.example.json`):
+Create a `gainsight_config.json` file (start from `config/examples/gainsight_config.example.json`):
 
 ```json
 {

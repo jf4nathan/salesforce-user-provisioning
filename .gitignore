@@ -1,6 +1,7 @@
 # CSV files (may contain sensitive user data)
 *.csv
 !users_template.csv
+!templates/users_template.csv
 
 # Provisioning results (may contain sensitive user IDs and data)
 provisioning_results.json
