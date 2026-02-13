@@ -17,64 +17,19 @@ Requirements:
 
 import json
 import argparse
-import subprocess
-import shutil
 import os
 import sys
-import requests
-import base64
 from datetime import datetime
 from typing import List, Dict, Set, Optional, Tuple
-from simple_salesforce import Salesforce
 
-# Import classes from provision_user.py
+# Import classes from project modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from provision_user import SalesforceUserProvisioner, JiraClient
+from provision_user import SalesforceUserProvisioner
+from jira_client import JiraClient, load_jira_client_from_args, add_jira_args
 
 
 class UserPermissionsUpdater(SalesforceUserProvisioner):
     """Extends SalesforceUserProvisioner to add user update functionality"""
-    
-    def find_user_by_email(self, email: str) -> Optional[Dict]:
-        """Find user by email address"""
-        if not email:
-            return None
-        
-        # Handle sandbox usernames - try both with and without sandbox suffix
-        query_email = email
-        if self.sandbox_name and not query_email.endswith(f".{self.sandbox_name}"):
-            query_email = f"{email}.{self.sandbox_name}"
-        
-        # Try to find user by email or username
-        query = f"""
-        SELECT Id, FirstName, LastName, Email, Username, Profile.Name, ProfileId, UserRole.Name, UserRoleId, Title
-        FROM User 
-        WHERE (Email = '{email}' OR Username = '{query_email}' OR Email = '{query_email}')
-        AND IsActive = true 
-        LIMIT 1
-        """
-        
-        try:
-            result = self.sf.query(query)
-            if not result['records']:
-                return None
-            
-            user = result['records'][0]
-            return {
-                'Id': user['Id'],
-                'FirstName': user.get('FirstName', ''),
-                'LastName': user.get('LastName', ''),
-                'Email': user.get('Email', ''),
-                'Username': user.get('Username', ''),
-                'Profile': user.get('Profile', {}).get('Name'),
-                'ProfileId': user.get('ProfileId'),
-                'Role': user.get('UserRole', {}).get('Name'),
-                'RoleId': user.get('UserRoleId'),
-                'Title': user.get('Title')
-            }
-        except Exception as e:
-            print(f"  ERROR: Could not find user: {str(e)}")
-            return None
     
     def get_user_current_permissions(self, user_id: str) -> Dict:
         """Get current Profile, Role, and Permission Sets for a user"""
@@ -131,10 +86,11 @@ class UserPermissionsUpdater(SalesforceUserProvisioner):
         if permission_set_group_ids:
             permission_set_group_names = self.get_permission_set_group_names(permission_set_group_ids)
         
+        user_role = user.get('UserRole')
         return {
-            'Profile': user.get('Profile', {}).get('Name'),
+            'Profile': user.get('Profile', {}).get('Name') if user.get('Profile') else None,
             'ProfileId': user.get('ProfileId'),
-            'Role': user.get('UserRole', {}).get('Name'),
+            'Role': user_role.get('Name') if user_role else None,
             'RoleId': user.get('UserRoleId'),
             'permission_set_ids': permission_set_ids,
             'permission_set_names': permission_set_names,
@@ -248,53 +204,6 @@ class UserPermissionsUpdater(SalesforceUserProvisioner):
             print(f"  ERROR: Failed to update Profile/Role: {str(e)}")
             return False
     
-    def get_mimic_user_config(self, mimic_user_email: str) -> Optional[Dict]:
-        """Get user details (profile, role, permission sets) to mimic"""
-        mimic_user = self.find_user_by_email(mimic_user_email)
-        if not mimic_user:
-            return None
-        
-        user_id = mimic_user['Id']
-        
-        # Get permission sets assigned to this user
-        psa_query = f"""
-        SELECT PermissionSetId, PermissionSet.Name, PermissionSet.Label
-        FROM PermissionSetAssignment
-        WHERE AssigneeId = '{user_id}'
-        """
-        
-        permission_set_ids = []
-        try:
-            psa_result = self.sf.query(psa_query)
-            permission_set_ids = [psa['PermissionSetId'] for psa in psa_result['records']]
-        except Exception as e:
-            print(f"  WARNING: Could not get permission sets: {str(e)}")
-        
-        # Get permission set groups assigned to this user
-        permission_set_group_ids = []
-        try:
-            psg_query = f"""
-            SELECT PermissionSetGroupId
-            FROM PermissionSetGroupAssignment
-            WHERE AssigneeId = '{user_id}'
-            """
-            psg_result = self.sf.query(psg_query)
-            permission_set_group_ids = [psg['PermissionSetGroupId'] for psg in psg_result['records']]
-        except Exception as e:
-            # PermissionSetGroupAssignment may not be available
-            pass
-        
-        return {
-            'Profile': mimic_user.get('Profile'),
-            'ProfileId': mimic_user.get('ProfileId'),
-            'Role': mimic_user.get('Role'),
-            'RoleId': mimic_user.get('RoleId'),
-            'permission_set_ids': permission_set_ids,
-            'permission_set_group_ids': permission_set_group_ids,
-            'user_id': user_id,
-            'name': f"{mimic_user.get('FirstName', '')} {mimic_user.get('LastName', '')}".strip()
-        }
-    
     def update_user_permissions(self, user_email: str, mimic_user_email: str, dry_run: bool = False) -> Dict:
         """Main method to update user permissions"""
         print(f"\n{'='*60}")
@@ -326,7 +235,6 @@ class UserPermissionsUpdater(SalesforceUserProvisioner):
                 'error': f"Mimic user not found: {mimic_user_email}"
             }
         
-        print(f"  Found mimic user: {mimic_config['name']}")
         print(f"  Mimic Profile: {mimic_config.get('Profile', 'N/A')}")
         print(f"  Mimic Role: {mimic_config.get('Role', 'N/A')}")
         
@@ -584,52 +492,12 @@ Examples:
     parser.add_argument('--mimic-user-email', required=True, help='Email of user to mimic (copy permissions from)')
     parser.add_argument('--org', required=True, help='Salesforce org alias (e.g., mavenprod)')
     parser.add_argument('--dry-run', action='store_true', help='Preview changes without making them')
-    parser.add_argument('--jira-config', help='Path to JSON file with Jira configuration')
-    parser.add_argument('--jira-url', help='Jira instance URL (e.g., https://company.atlassian.net)')
-    parser.add_argument('--jira-email', help='Jira user email for API authentication')
-    parser.add_argument('--jira-token', help='Jira API token')
-    parser.add_argument('--jira-project', help='Jira project key (e.g., PROJ)')
-    parser.add_argument('--jira-issue-type', default='Task', help='Jira issue type (default: Task)')
+    add_jira_args(parser)
     
     args = parser.parse_args()
 
-    # Convenience: if a local jira_config.json exists and no Jira options were provided,
-    # auto-load it so Jira ticket creation is enabled by default.
-    if not args.jira_config:
-        default_jira_config = os.getenv("JIRA_CONFIG_PATH", "jira_config.json")
-        if os.path.exists(default_jira_config):
-            args.jira_config = default_jira_config
-    
-    # Initialize Jira client if configured
-    jira_client = None
-    if args.jira_config:
-        try:
-            with open(args.jira_config, 'r') as f:
-                jira_config = json.load(f)
-            jira_client = JiraClient(
-                jira_url=jira_config['jira_url'],
-                email=jira_config['email'],
-                api_token=jira_config['api_token'],
-                project_key=jira_config['project_key'],
-                issue_type=jira_config.get('issue_type', 'Task'),
-                assignee_email=jira_config.get('assignee_email'),
-                board_id=jira_config.get('board_id')
-            )
-            print("Jira integration: ENABLED")
-        except Exception as e:
-            print(f"WARNING: Failed to load Jira config from {args.jira_config}: {e}")
-            print("Continuing without Jira integration...")
-    elif args.jira_url and args.jira_email and args.jira_token and args.jira_project:
-        jira_client = JiraClient(
-            jira_url=args.jira_url,
-            email=args.jira_email,
-            api_token=args.jira_token,
-            project_key=args.jira_project,
-            issue_type=args.jira_issue_type
-        )
-        print("Jira integration: ENABLED")
-    else:
-        print("Jira integration: DISABLED (no configuration provided)")
+    # Initialize Jira client (auto-detects config from file, CLI args, or env vars)
+    jira_client = load_jira_client_from_args(args)
     
     # Initialize updater
     try:

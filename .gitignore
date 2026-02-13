@@ -10,6 +10,9 @@ provisioning_results.json.backup
 # User backup files (contain sensitive user permission data)
 user_backup_*.json
 
+# Temp folder (for temporary/working files)
+temp/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -22,7 +25,9 @@ ENV/
 .venv
 
 # IDE
-.cursor/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 .vscode/
 .idea/
 *.swp

@@ -16,6 +16,7 @@ User provisioning script for Salesforce that creates users and assigns permissio
 - ✅ Generates detailed provisioning results
 - ✅ **Environment confirmation prompt** - Shows org details and asks for confirmation before provisioning (prevents accidental production deployments)
 - ✅ **Helper Scripts** - Query existing users, check managers, verify licenses before/after provisioning
+- ✅ **User Deprovisioning** - Deactivate users and remove package license assignments in bulk
 
 ## Prerequisites
 
@@ -374,6 +375,57 @@ Gainsight CS Permission Set:
   Permission Set: Gainsight CS (Gainsight_CS)
 ```
 
+## User Deprovisioning
+
+The `deprovision_user.py` script deactivates Salesforce users and removes their package license assignments. Profiles, roles, and permission sets are left as-is.
+
+### Deprovisioning Usage
+
+```bash
+# Deprovision by names (interactive, prompts for confirmation)
+python deprovision_user.py --org mavenprod --names "John Doe, Jane Smith"
+
+# Deprovision from a CSV file
+python deprovision_user.py --org mavenprod --csv temp/deprovisioning_list.csv
+
+# Dry run - preview what would happen without making changes
+python deprovision_user.py --org mavenprod --names "John Doe" --dry-run
+
+# Skip per-user confirmation prompts
+python deprovision_user.py --org mavenprod --names "John Doe, Jane Smith" --skip-confirmation
+```
+
+### Deprovisioning CSV Format
+
+Either format is accepted:
+
+```csv
+Name
+John Doe
+Jane Smith
+```
+
+```csv
+FirstName,LastName
+John,Doe
+Jane,Smith
+```
+
+### What Deprovisioning Does
+
+For each name provided:
+
+1. **Searches for active users** matching the first and last name
+2. **Prompts for selection** if multiple users match (skipped with `--skip-confirmation`)
+3. **Removes all package license assignments** (e.g., Gainsight)
+4. **Deactivates the user** (`IsActive = false`)
+5. **Deactivates the user in Gainsight** (if `gainsight_config.json` is present, the user exists in Gainsight, and is currently active)
+6. **Leaves permissions and profile as-is** - no changes to permission sets, permission set groups, profile, or role
+
+Gainsight integration is automatic -- if `gainsight_config.json` exists, the script will check Gainsight for each user and deactivate them there as well. No extra flags needed.
+
+Results are saved to `temp/deprovisioning_results.json` by default (override with `--output`).
+
 ## Helper Scripts
 
 The repository includes several helper scripts to assist with user provisioning:
@@ -414,6 +466,16 @@ Verifies that a user has the Gainsight package license and Gainsight CS permissi
 **Usage:**
 ```bash
 python check_gainsight_license.py --org mavenprod user.email@mavenclinic.com
+```
+
+### `deprovision_user.py`
+
+Deactivates Salesforce users and removes their package license assignments. Accepts names via CLI (`--names`) or CSV file (`--csv`). Supports `--dry-run` for previewing changes.
+
+**Usage:**
+```bash
+python deprovision_user.py --org mavenprod --names "John Doe, Jane Smith"
+python deprovision_user.py --org mavenprod --csv temp/deprovisioning_list.csv --dry-run
 ```
 
 ### `gainsight_client.py`

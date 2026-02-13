@@ -1,0 +1,11 @@
+---
+description: Put temporary and working files in the temp folder
+alwaysApply: true
+---
+
+# Temp Files
+
+- **All temporary or working files** (one-off CSVs, output JSON, scratch lists, etc.) must go in the **`temp/`** folder.
+- Examples: `temp/provision_maulik.csv`, `temp/provisioning_results.json`, `temp/deprovisioning_list.csv`.
+- Do not create temp files in the project root (e.g. no `provision_maulik.csv` at root).
+- Script defaults already use `temp/` where applicable (e.g. deprovision `--output`); when generating paths for the user or for one-off runs, use `temp/`.
