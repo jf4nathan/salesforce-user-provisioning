@@ -17,9 +17,9 @@ import sys
 from typing import Dict, List, Optional
 
 # Import classes from project modules
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from provision_user import SalesforceUserProvisioner  # noqa: E402
-from jira_client import load_jira_client_from_args, add_jira_args  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from scripts.core.provision_user import SalesforceUserProvisioner  # noqa: E402
+from scripts.integrations.jira_client import load_jira_client_from_args, add_jira_args  # noqa: E402
 
 
 def _get_assigned_permission_set_names(provisioner: SalesforceUserProvisioner, user_id: str) -> List[str]:

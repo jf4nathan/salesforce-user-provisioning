@@ -532,7 +532,7 @@ def load_config(config_path: str = None) -> Dict:
     if not os.path.exists(config_path):
         raise FileNotFoundError(
             f"Gainsight config not found: {config_path}\n"
-            f"Create gainsight_config.json from gainsight_config.example.json"
+            f"Create gainsight_config.json from config/examples/gainsight_config.example.json"
         )
     
     with open(config_path, 'r') as f:
