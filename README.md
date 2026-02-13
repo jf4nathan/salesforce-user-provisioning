@@ -115,11 +115,11 @@ python scripts/helpers/check_vps.py --org mavenprod
 
 2. **Run the script**:
    ```bash
-   # Without Jira tickets:
-   python scripts/core/provision_user.py --csv users.csv --org mavenprod
+   # Recommended guardrail wrapper (enforces temp/ input/output paths):
+   ./scripts/run_provision.sh --csv temp/users.csv --org mavenprod
 
-   # With Jira tickets (recommended):
-   python scripts/core/provision_user.py --csv users.csv --org mavenprod --jira-config jira_config.json
+   # With Jira tickets:
+   ./scripts/run_provision.sh --csv temp/users.csv --org mavenprod --jira-config jira_config.json
    ```
 
 3. **Reset passwords manually**:
