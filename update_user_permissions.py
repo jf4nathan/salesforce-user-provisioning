@@ -86,10 +86,11 @@ class UserPermissionsUpdater(SalesforceUserProvisioner):
         if permission_set_group_ids:
             permission_set_group_names = self.get_permission_set_group_names(permission_set_group_ids)
         
+        user_role = user.get('UserRole')
         return {
-            'Profile': user.get('Profile', {}).get('Name'),
+            'Profile': user.get('Profile', {}).get('Name') if user.get('Profile') else None,
             'ProfileId': user.get('ProfileId'),
-            'Role': user.get('UserRole', {}).get('Name'),
+            'Role': user_role.get('Name') if user_role else None,
             'RoleId': user.get('UserRoleId'),
             'permission_set_ids': permission_set_ids,
             'permission_set_names': permission_set_names,

@@ -1081,8 +1081,8 @@ CSV Format:
     parser.add_argument('--org', required=True, help='Salesforce org alias (e.g., mavenprod)')
     parser.add_argument('--threshold', type=float, default=0.5, 
                        help='Permission set assignment threshold (0.0-1.0, default: 0.5)')
-    parser.add_argument('--output', default='provisioning_results.json',
-                       help='Output file for results (default: provisioning_results.json)')
+    parser.add_argument('--output', default='temp/provisioning_results.json',
+                       help='Output file for results (default: temp/provisioning_results.json)')
     add_jira_args(parser)
     
     args = parser.parse_args()
@@ -1129,7 +1129,10 @@ CSV Format:
     # Provision users
     results = provisioner.provision_users_from_csv(args.csv, args.threshold)
     
-    # Save results
+    # Save results (ensure output directory exists)
+    output_dir = os.path.dirname(args.output)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2)
     

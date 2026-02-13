@@ -14,8 +14,8 @@ def main():
     parser.add_argument('--user-id', required=True, help='Salesforce User ID')
     parser.add_argument('--org', required=True, help='Salesforce org alias')
     add_jira_args(parser)
-    parser.add_argument('--results-file', default='provisioning_results.json', 
-                       help='Path to provisioning results JSON file')
+    parser.add_argument('--results-file', default='temp/provisioning_results.json', 
+                       help='Path to provisioning results JSON file (default: temp/provisioning_results.json)')
     
     args = parser.parse_args()
     
