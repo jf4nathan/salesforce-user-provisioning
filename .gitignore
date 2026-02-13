@@ -25,7 +25,9 @@ ENV/
 .venv
 
 # IDE
-.cursor/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 .vscode/
 .idea/
 *.swp
