@@ -383,6 +383,11 @@ class SalesforceUserProvisioner:
             if permission_data.get('permission_sets'):
                 assigned_permission_set_names = self.assign_permission_sets(user_id, permission_data['permission_sets'])
             
+            gainsight_result = None
+            # Provision Gainsight user first so Jira can include details when created
+            if self.gainsight_client and user_data.get('Profile', '').lower() == 'client success':
+                gainsight_result = self._provision_gainsight_user(user_data)
+
             # Create or update Jira ticket if configured
             if self.jira_client:
                 user_link = self.get_user_link(user_id)
@@ -395,6 +400,7 @@ class SalesforceUserProvisioner:
                         user_link=user_link,
                         assigned_group_names=assigned_group_names,
                         assigned_permission_set_names=assigned_permission_set_names,
+                        gainsight_result=gainsight_result,
                     )
                 else:
                     self.create_jira_ticket(
@@ -403,11 +409,8 @@ class SalesforceUserProvisioner:
                         user_link,
                         assigned_group_names,
                         assigned_permission_set_names,
+                        gainsight_result=gainsight_result,
                     )
-            
-            # Provision Gainsight user if profile is Client Success
-            if self.gainsight_client and user_data.get('Profile', '').lower() == 'client success':
-                self._provision_gainsight_user(user_data)
             
             # Note: Password reset must be done manually in Salesforce UI
             print(f"  NOTE: Please reset password manually in Setup > Users > Users")
@@ -443,7 +446,11 @@ class SalesforceUserProvisioner:
             existing_user = self.gainsight_client.search_user_by_email(email)
             if existing_user:
                 print(f"  INFO: User already exists in Gainsight (ID: {existing_user.get('id')})")
-                return existing_user
+                return {
+                    "created": False,
+                    "user": existing_user,
+                    "license_type": self.gainsight_client.default_license_type if self.gainsight_client else "Full",
+                }
             
             # Create user with Full license and client resources group
             result = self.gainsight_client.create_user(
@@ -456,7 +463,11 @@ class SalesforceUserProvisioner:
             )
             
             print(f"  SUCCESS: Gainsight user created (ID: {result.get('id')})")
-            return result
+            return {
+                "created": True,
+                "user": result,
+                "license_type": "Full",
+            }
             
         except Exception as e:
             print(f"  WARNING: Failed to provision Gainsight user: {str(e)}")
@@ -641,7 +652,8 @@ class SalesforceUserProvisioner:
             return f"{lightning_url}/lightning/r/User/{user_id}/view"
     
     def create_jira_ticket(self, user_data: Dict, user_id: str, user_link: str, 
-                          assigned_group_names: List[str] = None, assigned_permission_set_names: List[str] = None):
+                          assigned_group_names: List[str] = None, assigned_permission_set_names: List[str] = None,
+                          gainsight_result: Optional[Dict] = None):
         """Create a Jira ticket for new user provisioning"""
         if not self.jira_client:
             return
@@ -664,7 +676,7 @@ class SalesforceUserProvisioner:
                 ]
             }
         ] + self._build_jira_description_content(
-            user_data, user_id, user_link, assigned_group_names, assigned_permission_set_names
+            user_data, user_id, user_link, assigned_group_names, assigned_permission_set_names, gainsight_result
         )
         
         description = {
@@ -695,7 +707,8 @@ class SalesforceUserProvisioner:
             print(f"  WARNING: Jira ticket creation failed (user still created successfully)")
 
     def update_existing_jira_ticket(self, issue_key: str, user_data: Dict, user_id: str, user_link: str,
-                                    assigned_group_names: List[str] = None, assigned_permission_set_names: List[str] = None) -> bool:
+                                    assigned_group_names: List[str] = None, assigned_permission_set_names: List[str] = None,
+                                    gainsight_result: Optional[Dict] = None) -> bool:
         """Update an existing Jira issue by adding a comment with the same details we normally include in a ticket."""
         if not self.jira_client:
             return False
@@ -721,7 +734,9 @@ class SalesforceUserProvisioner:
                     ]
                 },
                 {"type": "paragraph"},
-            ] + (self._build_jira_description_content(user_data, user_id, user_link, assigned_group_names, assigned_permission_set_names))
+            ] + (self._build_jira_description_content(
+                user_data, user_id, user_link, assigned_group_names, assigned_permission_set_names, gainsight_result
+            ))
         }
 
         ok = self.jira_client.add_comment(issue_key, description_adf)
@@ -733,7 +748,8 @@ class SalesforceUserProvisioner:
         return ok
 
     def _build_jira_description_content(self, user_data: Dict, user_id: str, user_link: str,
-                                        assigned_group_names: List[str], assigned_permission_set_names: List[str]) -> List[Dict]:
+                                        assigned_group_names: List[str], assigned_permission_set_names: List[str],
+                                        gainsight_result: Optional[Dict] = None) -> List[Dict]:
         """Build the ADF content array used in Jira descriptions/comments (excluding doc wrapper)."""
         # Build permission sets list items
         permission_set_items = []
@@ -850,7 +866,59 @@ class SalesforceUserProvisioner:
                         }]
                     }
                 ]
-            },
+            }
+        ]
+
+        gainsight_created = bool(gainsight_result and gainsight_result.get("created") and gainsight_result.get("user", {}).get("id"))
+        if gainsight_created:
+            gainsight_user = gainsight_result.get("user", {})
+            gainsight_user_id = gainsight_user.get("id")
+            gainsight_license_type = gainsight_result.get("license_type") or "Full"
+            description_content += [
+                {"type": "paragraph"},  # Empty line
+                {
+                    "type": "heading",
+                    "attrs": {"level": 3},
+                    "content": [{"type": "text", "text": "Gainsight Provisioning"}]
+                },
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [
+                                    {"type": "text", "text": "Status: "},
+                                    {"type": "text", "text": "Provisioned successfully"}
+                                ]
+                            }]
+                        },
+                        {
+                            "type": "listItem",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [
+                                    {"type": "text", "text": "Gainsight User ID: "},
+                                    {"type": "text", "text": gainsight_user_id}
+                                ]
+                            }]
+                        },
+                        {
+                            "type": "listItem",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [
+                                    {"type": "text", "text": "License Type: "},
+                                    {"type": "text", "text": gainsight_license_type}
+                                ]
+                            }]
+                        }
+                    ]
+                }
+            ]
+
+        description_content += [
             {"type": "paragraph"},  # Empty line
             {
                 "type": "heading",
