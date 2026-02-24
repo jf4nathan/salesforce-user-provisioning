@@ -743,6 +743,8 @@ class SalesforceUserProvisioner:
         if ok:
             print(f"  SUCCESS: Updated Jira ticket (comment added): {issue_key}")
             print(f"  Ticket URL: {self.jira_client.jira_url}/browse/{issue_key}")
+            if self.jira_client.success_status:
+                self.jira_client.transition_to_status(issue_key, self.jira_client.success_status)
         else:
             print(f"  WARNING: Failed to update Jira ticket: {issue_key}")
         return ok

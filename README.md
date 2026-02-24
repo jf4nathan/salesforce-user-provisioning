@@ -210,9 +210,12 @@ Create a `jira_config.json` file (start from `config/examples/jira_config.exampl
   "project_key": "PROJECT_KEY",
   "issue_type": "Task",
   "assignee_email": "assignee@company.com",
-  "board_id": 123
+  "board_id": 123,
+  "success_status": "Shipped"
 }
 ```
+
+- `success_status`: Status to transition tickets to on successful provisioning (e.g., `"Shipped"`). Omit to skip transition.
 
 **Default behavior (to prevent “Jira integration: DISABLED”)**
 
@@ -227,6 +230,7 @@ export JIRA_API_TOKEN="YOUR_API_TOKEN"
 export JIRA_PROJECT_KEY="PROJECT_KEY"
 export JIRA_ASSIGNEE_EMAIL="assignee@company.com"  # Optional
 export JIRA_BOARD_ID="123"  # Optional, for sprint assignment
+export JIRA_SUCCESS_STATUS="Shipped"  # Optional, transition to this status on success
 ```
 
 **Option 3: Command Line Arguments**

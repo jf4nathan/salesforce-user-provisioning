@@ -21,7 +21,8 @@ class JiraClient:
     """Client for creating Jira tickets via REST API"""
     
     def __init__(self, jira_url: str, email: str, api_token: str, project_key: str, issue_type: str = "Task", 
-                 assignee_email: Optional[str] = None, board_id: Optional[int] = None):
+                 assignee_email: Optional[str] = None, board_id: Optional[int] = None,
+                 success_status: Optional[str] = None):
         """
         Initialize Jira client
         
@@ -33,6 +34,7 @@ class JiraClient:
             issue_type: Issue type (default: "Task")
             assignee_email: Email of user to assign tickets to (optional)
             board_id: Jira board ID for getting current sprint (optional)
+            success_status: Status to transition to on successful provisioning (e.g., "Shipped") (optional)
         """
         self.jira_url = jira_url.rstrip('/')
         self.email = email
@@ -41,6 +43,7 @@ class JiraClient:
         self.issue_type = issue_type
         self.assignee_email = assignee_email
         self.board_id = board_id
+        self.success_status = success_status
         self.auth_header = self._create_auth_header(email, api_token)
         self._sprint_field_id = None  # Cache sprint custom field ID
     
@@ -153,6 +156,46 @@ class JiraClient:
         # Fallback to common sprint field ID
         self._sprint_field_id = "customfield_10020"
         return self._sprint_field_id
+    
+    def transition_to_status(self, issue_key: str, status_name: str) -> bool:
+        """
+        Transition an issue to a target status by name (e.g., "Shipped").
+        
+        Args:
+            issue_key: Jira issue key (e.g., "SFDC-1001")
+            status_name: Target status name (case-insensitive, e.g., "Shipped")
+        
+        Returns:
+            True if transition succeeded, False otherwise.
+        """
+        url = f"{self.jira_url}/rest/api/3/issue/{issue_key}/transitions"
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": self.auth_header
+        }
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            transitions = data.get("transitions", [])
+            status_lower = status_name.strip().lower()
+            for t in transitions:
+                to_status = t.get("to", {})
+                if to_status.get("name", "").strip().lower() == status_lower:
+                    transition_id = t.get("id")
+                    post_response = requests.post(
+                        url, json={"transition": {"id": transition_id}},
+                        headers=headers, timeout=10
+                    )
+                    post_response.raise_for_status()
+                    print(f"  SUCCESS: Transitioned {issue_key} to '{status_name}'")
+                    return True
+            print(f"  WARNING: No transition to '{status_name}' found for {issue_key} (available: {[t.get('to', {}).get('name') for t in transitions]})")
+            return False
+        except requests.exceptions.RequestException as e:
+            print(f"  WARNING: Could not transition {issue_key} to '{status_name}': {str(e)}")
+            return False
     
     def create_ticket(self, summary: str, description: str, max_retries: int = 3, **kwargs) -> Optional[Dict]:
         """
@@ -284,6 +327,11 @@ class JiraClient:
                             print(f"  SUCCESS: Assigned sprint to ticket")
                         except Exception as e:
                             print(f"  WARNING: Could not assign sprint to ticket: {str(e)}")
+                
+                # Transition to success status (e.g., "Shipped") if configured
+                status_to_transition = kwargs.get('transition_to_status') or self.success_status
+                if status_to_transition:
+                    self.transition_to_status(ticket_key, status_to_transition)
                 
                 return {
                     'key': ticket_key,
@@ -448,6 +496,7 @@ def add_jira_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--jira-token', help='Jira API token')
     parser.add_argument('--jira-project', help='Jira project key (e.g., PROJ)')
     parser.add_argument('--jira-issue-type', default='Task', help='Jira issue type (default: Task)')
+    parser.add_argument('--jira-success-status', help='Status to transition to on success (e.g., Shipped)')
 
 
 def load_jira_client_from_config(config_path: str) -> JiraClient:
@@ -474,6 +523,7 @@ def load_jira_client_from_config(config_path: str) -> JiraClient:
         issue_type=config.get('issue_type', 'Task'),
         assignee_email=config.get('assignee_email'),
         board_id=config.get('board_id'),
+        success_status=config.get('success_status'),
     )
 
 
@@ -512,6 +562,8 @@ def load_jira_client_from_args(args: argparse.Namespace, verbose: bool = True) -
                     print(f"  Assignee: {cfg['assignee_email']}")
                 if cfg.get('board_id'):
                     print(f"  Board ID: {cfg['board_id']} (for current sprint)")
+                if cfg.get('success_status'):
+                    print(f"  Success status: {cfg['success_status']}")
             return client
         except Exception as e:
             if verbose:
@@ -530,6 +582,7 @@ def load_jira_client_from_args(args: argparse.Namespace, verbose: bool = True) -
         board = getattr(args, 'jira_board_id', None)
         if board is None and os.getenv('JIRA_BOARD_ID'):
             board = int(os.getenv('JIRA_BOARD_ID'))
+        success_status = getattr(args, 'jira_success_status', None) or os.getenv('JIRA_SUCCESS_STATUS')
 
         client = JiraClient(
             jira_url=jira_url,
@@ -539,6 +592,7 @@ def load_jira_client_from_args(args: argparse.Namespace, verbose: bool = True) -
             issue_type=getattr(args, 'jira_issue_type', 'Task'),
             assignee_email=assignee,
             board_id=board,
+            success_status=success_status,
         )
         if verbose:
             print("Jira integration: ENABLED")
@@ -559,6 +613,7 @@ def load_jira_client_from_args(args: argparse.Namespace, verbose: bool = True) -
             issue_type=os.getenv('JIRA_ISSUE_TYPE', 'Task'),
             assignee_email=os.getenv('JIRA_ASSIGNEE_EMAIL'),
             board_id=int(os.getenv('JIRA_BOARD_ID')) if os.getenv('JIRA_BOARD_ID') else None,
+            success_status=os.getenv('JIRA_SUCCESS_STATUS'),
         )
         if verbose:
             print("Jira integration: ENABLED (from environment variables)")
