@@ -29,6 +29,8 @@ ENV/
 .cursor/*
 !.cursor/rules/
 !.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
 .vscode/
 .idea/
 *.swp
