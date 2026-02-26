@@ -452,14 +452,15 @@ class SalesforceUserProvisioner:
                     "license_type": self.gainsight_client.default_license_type if self.gainsight_client else "Full",
                 }
             
-            # Create user with Full license and client resources group
+            # Create user with Full license, CSM role, and client resources permission bundle
             result = self.gainsight_client.create_user(
                 email=email,
                 first_name=first_name,
                 last_name=last_name,
                 timezone=timezone,
                 license_type="Full",
-                groups=[{"display": "client resources"}]
+                groups=[{"display": "client resources"}],
+                roles=["CSM"]
             )
             
             print(f"  SUCCESS: Gainsight user created (ID: {result.get('id')})")

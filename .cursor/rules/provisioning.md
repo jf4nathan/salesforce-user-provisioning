@@ -118,6 +118,14 @@ Before any provisioning/deprovisioning action:
 - Never deploy or perform irreversible production changes without explicit user instruction
 - Prefer dry-run/review steps first when available (`scripts/core/deprovision_user.py --dry-run`)
 
+## Post-Gainsight Provisioning Verification
+
+After creating a Gainsight user (during provisioning or reactivation), **remind the user** to verify:
+- **GS Role** is set to **CSM** on the user record
+- **Permission Bundle** "Client Resources" is assigned
+
+Use the Gainsight client search to check the created user's attributes, or ask the user to verify in the Gainsight UI.
+
 ## Error Handling
 
 **When provisioning fails**:

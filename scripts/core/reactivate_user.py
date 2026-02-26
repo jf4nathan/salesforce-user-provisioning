@@ -149,7 +149,8 @@ def ensure_gainsight_user(gainsight_client: Optional[GainsightClient], user_data
                 last_name=last_name,
                 timezone=timezone,
                 license_type="Full",
-                groups=[{"display": "client resources"}]
+                groups=[{"display": "client resources"}],
+                roles=["CSM"]
             )
             print(f"  SUCCESS: Created Gainsight user (ID: {result.get('id')})")
             return result
