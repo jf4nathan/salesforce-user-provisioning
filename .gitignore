@@ -32,6 +32,7 @@ ENV/
 .cursor/*
 !.cursor/rules/
 !.cursor/rules/**
+!.cursor/rules/salesforce-org-safety.mdc
 !.cursor/skills/
 !.cursor/skills/**
 .vscode/
