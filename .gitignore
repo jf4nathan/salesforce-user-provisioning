@@ -14,6 +14,9 @@ user_backup_*.json
 # Temp folder (for temporary/working files)
 temp/
 
+# Perf review analysis (contains internal ticket data)
+perf-review-fy26/
+
 # Python
 __pycache__/
 *.py[cod]

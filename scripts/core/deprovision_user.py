@@ -392,6 +392,56 @@ def parse_names_from_string(names_str: str) -> List[Tuple[str, str]]:
     return names
 
 
+def append_deprovision_log(log_path: str, org: str, requested_names: List[str], source: str,
+                          dry_run: bool, results: Dict) -> None:
+    """
+    Append an entry to the deprovision audit log.
+
+    Args:
+        log_path: Path to the log file
+        org: Target org alias
+        requested_names: List of "FirstName LastName" that were requested
+        source: 'names' or 'csv'
+        dry_run: Whether this was a dry run
+        results: Results dict from process_names (success, failed, skipped)
+    """
+    details = []
+    for r in results.get('success', []):
+        details.append({'name': r['name'], 'email': r.get('email', ''), 'status': 'deactivated'})
+    for r in results.get('failed', []):
+        details.append({'name': r['name'], 'email': r.get('email', ''), 'status': 'failed', 'errors': r.get('errors', [])})
+    for r in results.get('skipped', []):
+        details.append({'name': r['name'], 'status': 'skipped', 'reason': r.get('reason', '')})
+
+    entry = {
+        'timestamp': datetime.now().isoformat(),
+        'org': org,
+        'requested_names': requested_names,
+        'source': source,
+        'dry_run': dry_run,
+        'success': len(results.get('success', [])),
+        'failed': len(results.get('failed', [])),
+        'skipped': len(results.get('skipped', [])),
+        'details': details
+    }
+
+    log_dir = os.path.dirname(log_path)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+
+    existing = []
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            existing = []
+
+    existing.append(entry)
+    with open(log_path, 'w', encoding='utf-8') as f:
+        json.dump(existing, f, indent=2)
+
+
 def parse_names_from_csv(csv_file: str) -> List[Tuple[str, str]]:
     """
     Parse names from a CSV file.
@@ -460,8 +510,12 @@ CSV Format (either format works):
                         help='Preview changes without executing')
     parser.add_argument('--skip-confirmation', action='store_true',
                         help='Skip per-user confirmation prompts')
+    parser.add_argument('--log-only', action='store_true',
+                        help='Only write to audit log (no SF connection). Use when user not found in any org.')
     parser.add_argument('--output', default='temp/deprovisioning_results.json',
                         help='Output file for results (default: temp/deprovisioning_results.json)')
+    parser.add_argument('--log-file', default='temp/deprovision_log.json',
+                        help='Audit log file (default: temp/deprovision_log.json)')
 
     args = parser.parse_args()
 
@@ -477,6 +531,24 @@ CSV Format (either format works):
     if not names:
         print("ERROR: No valid names provided.")
         sys.exit(1)
+
+    # Log-only mode: write audit entry when user not found in any org
+    if args.log_only:
+        requested_names = [f"{f} {l}" for f, l in names]
+        results = {
+            'success': [],
+            'failed': [],
+            'skipped': [{'name': f"{f} {l}", 'reason': 'No user found in any org'} for f, l in names],
+            'timestamp': datetime.now().isoformat(),
+            'org': args.org,
+            'dryRun': False
+        }
+        log_dir = os.path.dirname(args.log_file)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+        append_deprovision_log(args.log_file, args.org, requested_names, 'names', False, results)
+        print(f"Logged deprovision request (user not found) to: {args.log_file}")
+        sys.exit(0)
 
     # Display header
     print("=" * 60)
@@ -565,6 +637,15 @@ CSV Format (either format works):
         json.dump(results, f, indent=2)
 
     print(f"\nResults saved to: {args.output}")
+
+    # Append to audit log
+    requested_names = [f"{f} {l}" for f, l in names]
+    source = 'names' if args.names else 'csv'
+    append_deprovision_log(
+        args.log_file, args.org, requested_names, source,
+        args.dry_run, results
+    )
+    print(f"Logged to: {args.log_file}")
 
 
 if __name__ == '__main__':
