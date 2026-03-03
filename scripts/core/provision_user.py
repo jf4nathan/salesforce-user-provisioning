@@ -248,7 +248,41 @@ class SalesforceUserProvisioner:
     
     def get_mimic_user_config(self, mimic_user_email: str) -> Optional[Dict]:
         """Get user details (profile, role, permission sets) to mimic"""
+        # Try active users first
         mimic_user = self.find_user_by_email(mimic_user_email)
+        
+        # If not found, try inactive users (for mimic user lookup)
+        if not mimic_user:
+            query_email = mimic_user_email
+            if self.sandbox_name and not query_email.endswith(f".{self.sandbox_name}"):
+                query_email = f"{mimic_user_email}.{self.sandbox_name}"
+            
+            query = f"""
+            SELECT Id, FirstName, LastName, Email, Username, Profile.Name, ProfileId, UserRole.Name, UserRoleId, Title
+            FROM User 
+            WHERE (Email = '{mimic_user_email}' OR Username = '{query_email}' OR Email = '{query_email}')
+            LIMIT 1
+            """
+            
+            try:
+                result = self.sf.query(query)
+                if result['records']:
+                    user = result['records'][0]
+                    mimic_user = {
+                        'Id': user['Id'],
+                        'FirstName': user.get('FirstName', ''),
+                        'LastName': user.get('LastName', ''),
+                        'Email': user.get('Email', ''),
+                        'Username': user.get('Username', ''),
+                        'Profile': user.get('Profile', {}).get('Name', '') if user.get('Profile') else '',
+                        'ProfileId': user.get('ProfileId', ''),
+                        'Role': user.get('UserRole', {}).get('Name', '') if user.get('UserRole') else '',
+                        'RoleId': user.get('UserRoleId', ''),
+                        'Title': user.get('Title', '')
+                    }
+            except Exception as e:
+                print(f"  WARNING: Error finding mimic user by email {mimic_user_email}: {str(e)}")
+        
         if not mimic_user:
             print(f"  ERROR: Mimic user not found: {mimic_user_email}")
             return None
@@ -750,6 +784,12 @@ class SalesforceUserProvisioner:
             print(f"  WARNING: Failed to update Jira ticket: {issue_key}")
         return ok
 
+    def _safe_text_value(self, value: Optional[str], default: str = 'N/A') -> str:
+        """Safely convert a value to text, handling None values properly for ADF format"""
+        if value is None:
+            return default
+        return str(value)
+    
     def _build_jira_description_content(self, user_data: Dict, user_id: str, user_link: str,
                                         assigned_group_names: List[str], assigned_permission_set_names: List[str],
                                         gainsight_result: Optional[Dict] = None) -> List[Dict]:
@@ -824,7 +864,7 @@ class SalesforceUserProvisioner:
                             "type": "paragraph",
                             "content": [
                                 {"type": "text", "text": "Title: "},
-                                {"type": "text", "text": user_data.get('Title', 'N/A')}
+                                {"type": "text", "text": self._safe_text_value(user_data.get('Title'), 'N/A')}
                             ]
                         }]
                     },
@@ -844,7 +884,7 @@ class SalesforceUserProvisioner:
                             "type": "paragraph",
                             "content": [
                                 {"type": "text", "text": "Role: "},
-                                {"type": "text", "text": user_data.get('Role', 'N/A')}
+                                {"type": "text", "text": self._safe_text_value(user_data.get('Role'), 'N/A')}
                             ]
                         }]
                     },
@@ -854,7 +894,7 @@ class SalesforceUserProvisioner:
                             "type": "paragraph",
                             "content": [
                                 {"type": "text", "text": "Manager: "},
-                                {"type": "text", "text": user_data.get('ManagerEmail', 'N/A')}
+                                {"type": "text", "text": self._safe_text_value(user_data.get('ManagerEmail'), 'N/A')}
                             ]
                         }]
                     },
