@@ -437,7 +437,7 @@ def append_deprovision_log(log_path: str, org: str, requested_names: List[str], 
         except (json.JSONDecodeError, IOError):
             existing = []
 
-    existing.append(entry)
+    existing.insert(0, entry)
     with open(log_path, 'w', encoding='utf-8') as f:
         json.dump(existing, f, indent=2)
 

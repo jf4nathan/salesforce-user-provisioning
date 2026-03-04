@@ -19,6 +19,7 @@ import json
 import argparse
 import os
 import sys
+from datetime import datetime
 from collections import Counter
 from simple_salesforce import Salesforce
 from typing import List, Dict, Set, Optional, Tuple
@@ -1172,6 +1173,62 @@ class SalesforceUserProvisioner:
         return results
 
 
+def append_provision_log(log_path: str, org: str, csv_file: str, results: Dict) -> None:
+    """
+    Append an entry to the provision audit log (latest at top).
+
+    Args:
+        log_path: Path to the log file
+        org: Target org alias
+        csv_file: Path to the CSV file processed
+        results: Results dict from provision_users_from_csv (success, failed)
+    """
+    details = []
+    for r in results.get('success', []):
+        u = r.get('user', {})
+        details.append({
+            'name': f"{u.get('FirstName', '')} {u.get('LastName', '')}".strip(),
+            'email': u.get('Email', ''),
+            'username': u.get('Username', ''),
+            'status': 'created',
+            'userId': r.get('userId', '')
+        })
+    for r in results.get('failed', []):
+        u = r.get('user', {})
+        details.append({
+            'name': f"{u.get('FirstName', '')} {u.get('LastName', '')}".strip(),
+            'email': u.get('Email', ''),
+            'status': 'failed',
+            'error': r.get('error', '')
+        })
+
+    entry = {
+        'timestamp': datetime.now().isoformat(),
+        'org': org,
+        'source': 'csv',
+        'csv_file': csv_file,
+        'success': len(results.get('success', [])),
+        'failed': len(results.get('failed', [])),
+        'details': details
+    }
+
+    log_dir = os.path.dirname(log_path)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+
+    existing = []
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            existing = []
+
+    existing.insert(0, entry)
+    with open(log_path, 'w', encoding='utf-8') as f:
+        json.dump(existing, f, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Provision Salesforce users from CSV file',
@@ -1195,6 +1252,8 @@ CSV Format:
                        help='Permission set assignment threshold (0.0-1.0, default: 0.5)')
     parser.add_argument('--output', default='temp/provisioning_results.json',
                        help='Output file for results (default: temp/provisioning_results.json)')
+    parser.add_argument('--log-file', default='temp/provision_log.json',
+                       help='Audit log file (default: temp/provision_log.json)')
     add_jira_args(parser)
     
     args = parser.parse_args()
@@ -1247,6 +1306,8 @@ CSV Format:
         os.makedirs(output_dir, exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2)
+    
+    append_provision_log(args.log_file, args.org, args.csv, results)
     
     print(f"\nResults saved to: {args.output}")
     

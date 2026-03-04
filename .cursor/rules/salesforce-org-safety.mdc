@@ -1,0 +1,25 @@
+---
+description: Restricts Salesforce CLI operations to mavenclinic orgs only. Prevents accidental connections, queries, deployments, or retrievals against non-mavenclinic orgs.
+alwaysApply: true
+---
+
+# Salesforce Org Safety
+
+**NEVER** connect to, query, deploy to, or retrieve from any Salesforce org that is not on the `mavenclinic.com` domain.
+
+## Allowed Orgs
+
+| Alias | Username |
+|---|---|
+| `devjtang` | `jonathan.tang@mavenclinic.com.devjtang1` |
+| `mavenprod` | `jonathan.tang@mavenclinic.com` |
+| `qa` | `jonathan.tang@mavenclinic.com.qa` |
+| `staging` | `jonathan.tang@mavenclinic.com.staging` |
+
+Any other org not listed above is also blocked by default.
+
+## Before Any SF CLI Command
+
+1. Confirm the target org alias or username belongs to `mavenclinic.com`
+2. If the alias is unfamiliar, run `sf org list` to verify the domain
+3. If in doubt, **stop and ask the user** — do not guess

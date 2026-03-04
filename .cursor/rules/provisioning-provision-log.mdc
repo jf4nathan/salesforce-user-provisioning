@@ -1,0 +1,36 @@
+---
+description: Provisioning must append to provision_log.json; format mirrors deprovision_log
+globs: scripts/core/provision_user.py
+alwaysApply: false
+---
+
+# Provisioning Audit Log
+
+Provisioning runs must append an entry to the audit log, mirroring the deprovision log pattern.
+
+## Log File
+
+- **Path**: `temp/provision_log.json` (configurable via `--log-file`)
+- **Order**: Latest at top (processed date descending) — use `insert(0, entry)`
+
+## Entry Format
+
+```json
+{
+  "timestamp": "ISO8601",
+  "org": "mavenprod",
+  "source": "csv",
+  "csv_file": "path/to/users.csv",
+  "success": 2,
+  "failed": 0,
+  "details": [
+    {"name": "John Doe", "email": "...", "username": "...", "status": "created", "userId": "..."},
+    {"name": "Jane Doe", "email": "...", "status": "failed", "error": "..."}
+  ]
+}
+```
+
+## Details Status Values
+
+- `created` — user provisioned successfully
+- `failed` — provisioning failed (include `error`)
