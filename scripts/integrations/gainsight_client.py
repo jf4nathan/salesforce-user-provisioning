@@ -337,14 +337,20 @@ class GainsightClient:
                 "value": {"value": kwargs['manager_id']}
             })
         
+        # Handle roles via top-level SCIM roles path (not custom_roles in extension)
+        if 'roles' in kwargs:
+            operations.append({
+                "op": "add",
+                "path": "roles",
+                "value": [{"value": r} for r in kwargs['roles']]
+            })
+        
         # Handle Gainsight-specific fields
         gainsight_updates = {}
         if 'is_super_admin' in kwargs:
             gainsight_updates['IsSuperAdmin'] = kwargs['is_super_admin']
         if 'license_type' in kwargs:
             gainsight_updates['LicenseType'] = kwargs['license_type']
-        if 'roles' in kwargs:
-            gainsight_updates['custom_roles'] = kwargs['roles']
         
         if gainsight_updates:
             operations.append({
@@ -450,14 +456,110 @@ class GainsightClient:
         response = requests.patch(url, json=payload, headers=self._get_headers(), timeout=30)
         return self._handle_response(response, "Remove user from group")
     
+    # ==================== PERMISSION BUNDLE OPERATIONS ====================
+    # Uses User Management REST API (not SCIM) at /v1/users/services
+    
+    def _get_rest_headers(self) -> Dict[str, str]:
+        """Get headers for User Management REST API requests (uses M2M OAuth token)"""
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self._get_access_token()}"
+        }
+    
+    def assign_permission_bundles(self, email: str, bundle_names: List[str],
+                                  action: str = "append") -> Dict:
+        """
+        Assign permission bundles to a user via User Management REST API.
+        
+        Args:
+            email: User's email (used as SFDCUserName key)
+            bundle_names: List of permission bundle names (e.g., ["Client Resources"])
+            action: "append" to add to existing bundles, "overwrite" to replace
+        
+        Returns:
+            API response dict
+        """
+        url = f"{self.tenant_url}/v1/users/services?key=SFDCUserName"
+        
+        payload = {
+            "records": [{
+                "SFDCUserName": email,
+                "permissionBundles": bundle_names
+            }],
+            "permissionBundleAction": action
+        }
+        
+        print(f"  Assigning permission bundles {bundle_names} to {email} (action={action})...")
+        response = requests.put(url, json=payload, headers=self._get_rest_headers(), timeout=30)
+        result = response.json()
+        
+        if result.get("result") and result.get("data", {}).get("success"):
+            print(f"  SUCCESS: Permission bundles assigned")
+            return result
+        else:
+            errors = result.get("data", {}).get("errors", [])
+            error_msg = errors[0].get("errorMessage", "Unknown error") if errors else result.get("errorDesc", "Unknown error")
+            raise Exception(f"Failed to assign permission bundles: {error_msg}")
+    
+    def update_user_via_rest(self, email: str, **kwargs) -> Dict:
+        """
+        Update user via User Management REST API.
+        Useful for fields not supported by SCIM (e.g., permissionBundles).
+        
+        Supported kwargs:
+            - permission_bundles (list of bundle names)
+            - permission_bundle_action ("append" or "overwrite", default "append")
+            - license_type, title, first_name, last_name, timezone, locale
+            - is_active (bool)
+        """
+        url = f"{self.tenant_url}/v1/users/services?key=SFDCUserName"
+        
+        record = {"SFDCUserName": email}
+        top_level = {}
+        
+        field_map = {
+            'license_type': 'LicenseType',
+            'title': 'Title',
+            'first_name': 'FirstName',
+            'last_name': 'LastName',
+            'timezone': 'Timezone',
+            'locale': 'Locale',
+            'is_active': 'IsActiveUser',
+        }
+        
+        for kwarg_key, api_key in field_map.items():
+            if kwarg_key in kwargs and kwargs[kwarg_key] is not None:
+                record[api_key] = kwargs[kwarg_key]
+        
+        if 'permission_bundles' in kwargs:
+            record['permissionBundles'] = kwargs['permission_bundles']
+            top_level['permissionBundleAction'] = kwargs.get('permission_bundle_action', 'append')
+        
+        payload = {"records": [record], **top_level}
+        
+        response = requests.put(url, json=payload, headers=self._get_rest_headers(), timeout=30)
+        result = response.json()
+        
+        if result.get("result") and result.get("data", {}).get("success"):
+            return result
+        else:
+            errors = result.get("data", {}).get("errors", [])
+            error_msg = errors[0].get("errorMessage", "Unknown error") if errors else result.get("errorDesc", "Unknown error")
+            raise Exception(f"User Management API update failed: {error_msg}")
+    
     # ==================== CONVENIENCE METHODS ====================
     
     def provision_user(self, email: str, first_name: str = None, last_name: str = None,
                        title: str = None, timezone: str = "America/New_York",
                        license_type: str = None, group_names: List[str] = None,
-                       roles: List[str] = None, mimic_user_email: str = None) -> Dict:
+                       roles: List[str] = None, permission_bundles: List[str] = None,
+                       mimic_user_email: str = None) -> Dict:
         """
-        Provision a user with optional mimic functionality
+        Provision a user with optional mimic functionality.
+        
+        Creates the SCIM user, then applies roles via SCIM PATCH and
+        permission bundles via the User Management REST API.
         
         Args:
             email: User's email
@@ -467,7 +569,8 @@ class GainsightClient:
             timezone: Timezone
             license_type: License type
             group_names: List of group names to assign
-            roles: List of roles to assign
+            roles: List of role names to assign (e.g., ["CSM"])
+            permission_bundles: List of permission bundle names (e.g., ["Client Resources"])
             mimic_user_email: Email of existing user to copy settings from
         
         Returns:
@@ -484,6 +587,19 @@ class GainsightClient:
         existing_user = self.search_user_by_email(email)
         if existing_user:
             print(f"  User already exists in Gainsight: {email} (ID: {existing_user.get('id')})")
+            user_id = existing_user.get('id')
+            # Still apply roles and permission bundles to existing user
+            if roles:
+                try:
+                    self.update_user(user_id, roles=roles)
+                    print(f"  SUCCESS: Roles {roles} added to existing user")
+                except Exception as e:
+                    print(f"  WARNING: Failed to add roles: {e}")
+            if permission_bundles:
+                try:
+                    self.assign_permission_bundles(email, permission_bundles)
+                except Exception as e:
+                    print(f"  WARNING: Failed to assign permission bundles: {e}")
             return existing_user
         
         # Get settings from mimic user if provided
@@ -511,8 +627,8 @@ class GainsightClient:
                 else:
                     print(f"  WARNING: Group not found: {name}")
         
-        # Create the user
-        return self.create_user(
+        # Create the user via SCIM
+        result = self.create_user(
             email=email,
             first_name=first_name,
             last_name=last_name,
@@ -522,6 +638,26 @@ class GainsightClient:
             groups=groups,
             roles=roles
         )
+        
+        user_id = result.get('id')
+        
+        # Assign roles via SCIM PATCH (create_user uses custom_roles in extension,
+        # but the top-level roles path is what actually sets the GS role)
+        if roles and user_id:
+            try:
+                self.update_user(user_id, roles=roles)
+                print(f"  SUCCESS: Roles {roles} assigned")
+            except Exception as e:
+                print(f"  WARNING: Failed to assign roles post-create: {e}")
+        
+        # Assign permission bundles via User Management REST API
+        if permission_bundles:
+            try:
+                self.assign_permission_bundles(email, permission_bundles)
+            except Exception as e:
+                print(f"  WARNING: Failed to assign permission bundles: {e}")
+        
+        return result
 
 
 def load_config(config_path: str = None) -> Dict:
@@ -571,6 +707,7 @@ def main():
                                help='License type')
     create_parser.add_argument('--groups', nargs='+', help='Group names to assign')
     create_parser.add_argument('--roles', nargs='+', help='Roles to assign')
+    create_parser.add_argument('--bundles', nargs='+', help='Permission bundle names to assign')
     create_parser.add_argument('--mimic', help='Email of user to mimic settings from')
     
     # Search user command
@@ -603,6 +740,18 @@ def main():
     remove_group_parser.add_argument('--group-id', help='Group ID')
     remove_group_parser.add_argument('--group-name', help='Group name (alternative to group-id)')
     
+    # Assign permission bundles command
+    bundles_parser = subparsers.add_parser('assign-bundles', help='Assign permission bundles to user')
+    bundles_parser.add_argument('--email', required=True, help='User email')
+    bundles_parser.add_argument('--bundles', nargs='+', required=True, help='Permission bundle names')
+    bundles_parser.add_argument('--action', choices=['append', 'overwrite'], default='append',
+                                help='append (default) or overwrite existing bundles')
+    
+    # Assign roles command
+    roles_parser = subparsers.add_parser('assign-roles', help='Assign roles to user via SCIM')
+    roles_parser.add_argument('--email', required=True, help='User email')
+    roles_parser.add_argument('--roles', nargs='+', required=True, help='Role names to assign')
+    
     # Deactivate user command
     deactivate_parser = subparsers.add_parser('deactivate', help='Deactivate a user')
     deactivate_parser.add_argument('--user-id', help='User ID')
@@ -634,6 +783,7 @@ def main():
                 license_type=args.license_type,
                 group_names=args.groups,
                 roles=args.roles,
+                permission_bundles=args.bundles,
                 mimic_user_email=args.mimic
             )
             print(json.dumps(result, indent=2))
@@ -713,6 +863,22 @@ def main():
             
             result = client.remove_user_from_group(group_id, args.user_id)
             print(f"SUCCESS: User removed from group")
+        
+        elif args.command == 'assign-bundles':
+            result = client.assign_permission_bundles(
+                email=args.email,
+                bundle_names=args.bundles,
+                action=args.action
+            )
+            print(f"SUCCESS: Permission bundles assigned")
+        
+        elif args.command == 'assign-roles':
+            user = client.search_user_by_email(args.email)
+            if not user:
+                print(f"ERROR: User not found: {args.email}")
+                sys.exit(1)
+            result = client.update_user(user['id'], roles=args.roles)
+            print(f"SUCCESS: Roles {args.roles} assigned")
         
         elif args.command == 'deactivate':
             user_id = args.user_id

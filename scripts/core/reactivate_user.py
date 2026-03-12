@@ -141,16 +141,16 @@ def ensure_gainsight_user(gainsight_client: Optional[GainsightClient], user_data
                 # Fetch updated user
                 return gainsight_client.get_user(gs_user_id)
         else:
-            # Create new user
+            # Create new user with proper role and permission bundle
             print(f"  INFO: Gainsight user does not exist, creating...")
-            result = gainsight_client.create_user(
+            result = gainsight_client.provision_user(
                 email=email,
                 first_name=first_name,
                 last_name=last_name,
                 timezone=timezone,
                 license_type="Full",
-                groups=[{"display": "client resources"}],
-                roles=["CSM"]
+                roles=["CSM"],
+                permission_bundles=["Client Resources"]
             )
             print(f"  SUCCESS: Created Gainsight user (ID: {result.get('id')})")
             return result
