@@ -143,55 +143,55 @@ class SalesforceUserProvisioner:
         psg_result = self.sf.query(psg_query)
         all_groups = {psg['Id']: psg for psg in psg_result['records']}
         
-        # Get permission set assignments
+        # Get permission set assignments (include PermissionSetGroupId to separate PSGs)
         psa_query = f"""
-        SELECT AssigneeId, PermissionSetId, PermissionSet.Name, PermissionSet.Label
+        SELECT AssigneeId, PermissionSetId, PermissionSetGroupId, PermissionSet.Name, PermissionSet.Label, PermissionSet.IsOwnedByProfile
         FROM PermissionSetAssignment
         WHERE AssigneeId IN ('{user_ids_str}')
         """
         psa_result = self.sf.query(psa_query)
         
-        # Build user -> permission sets mapping
-        user_permission_sets: Dict[str, Set[str]] = {}
-        for psa in psa_result['records']:
-            user_id = psa['AssigneeId']
-            ps_id = psa['PermissionSetId']
-            if user_id not in user_permission_sets:
-                user_permission_sets[user_id] = set()
-            user_permission_sets[user_id].add(ps_id)
-        
-        # Identify which users have which permission set groups
+        # Build user -> permission set groups and individual permission sets
         user_groups: Dict[str, Set[str]] = {}
+        user_individual_ps: Dict[str, Set[str]] = {}
         group_counts = Counter()
         
-        for user_id, ps_set in user_permission_sets.items():
-            user_groups[user_id] = set()
-            for group_id, group_ps_set in group_to_permission_sets.items():
-                if group_ps_set and group_ps_set.issubset(ps_set):
-                    user_groups[user_id].add(group_id)
-                    group_counts[group_id] += 1
+        for psa in psa_result['records']:
+            user_id = psa['AssigneeId']
+            psg_id = psa.get('PermissionSetGroupId')
+            is_profile = psa.get('PermissionSet', {}).get('IsOwnedByProfile', False)
+            
+            if is_profile:
+                continue
+            
+            if psg_id:
+                if user_id not in user_groups:
+                    user_groups[user_id] = set()
+                user_groups[user_id].add(psg_id)
+                group_counts[psg_id] += 1
+            else:
+                if user_id not in user_individual_ps:
+                    user_individual_ps[user_id] = set()
+                user_individual_ps[user_id].add(psa['PermissionSetId'])
         
-        # Determine which groups to assign
+        # Determine which groups to assign (deduplicate: each user counts once per group)
+        unique_group_counts = Counter()
+        for user_id, groups in user_groups.items():
+            for g in groups:
+                unique_group_counts[g] += 1
+        
         threshold_count = int(total_users * threshold)
         groups_to_assign = [
-            group_id for group_id, count in group_counts.items()
+            group_id for group_id, count in unique_group_counts.items()
             if count >= threshold_count
         ]
         
-        # Get permission sets NOT in assigned groups
-        ps_in_assigned_groups: Set[str] = set()
-        for group_id in groups_to_assign:
-            if group_id in group_to_permission_sets:
-                ps_in_assigned_groups.update(group_to_permission_sets[group_id])
-        
-        # Count frequency of individual permission sets
+        # Count frequency of individual permission sets (already excludes PSG-owned)
         permission_set_counts = Counter()
-        for psa in psa_result['records']:
-            ps_id = psa['PermissionSetId']
-            if ps_id not in ps_in_assigned_groups:
+        for user_id, ps_set in user_individual_ps.items():
+            for ps_id in ps_set:
                 permission_set_counts[ps_id] += 1
         
-        # Get individual permission sets to assign
         individual_ps_to_assign = [
             ps_id for ps_id, count in permission_set_counts.items()
             if count >= threshold_count
@@ -291,35 +291,33 @@ class SalesforceUserProvisioner:
         user_id = mimic_user['Id']
         print(f"  Found mimic user: {mimic_user.get('FirstName', '')} {mimic_user.get('LastName', '')} ({mimic_user_email})")
         
-        # Get permission sets assigned to this user
+        # Get permission sets assigned to this user (includes PSG-owned entries)
         psa_query = f"""
-        SELECT PermissionSetId, PermissionSet.Name, PermissionSet.Label
+        SELECT PermissionSetId, PermissionSetGroupId, PermissionSet.Name, PermissionSet.Label, PermissionSet.IsOwnedByProfile
         FROM PermissionSetAssignment
         WHERE AssigneeId = '{user_id}'
         """
         
         permission_set_ids = []
-        try:
-            psa_result = self.sf.query(psa_query)
-            permission_set_ids = [psa['PermissionSetId'] for psa in psa_result['records']]
-            print(f"  Found {len(permission_set_ids)} permission sets")
-        except Exception as e:
-            print(f"  WARNING: Could not get permission sets: {str(e)}")
-        
-        # Get permission set groups assigned to this user
         permission_set_group_ids = []
         try:
-            psg_query = f"""
-            SELECT PermissionSetGroupId
-            FROM PermissionSetGroupAssignment
-            WHERE AssigneeId = '{user_id}'
-            """
-            psg_result = self.sf.query(psg_query)
-            permission_set_group_ids = [psg['PermissionSetGroupId'] for psg in psg_result['records']]
+            psa_result = self.sf.query(psa_query)
+            seen_groups = set()
+            for psa in psa_result['records']:
+                psg_id = psa.get('PermissionSetGroupId')
+                is_profile = psa.get('PermissionSet', {}).get('IsOwnedByProfile', False)
+                if is_profile:
+                    continue
+                if psg_id:
+                    if psg_id not in seen_groups:
+                        seen_groups.add(psg_id)
+                        permission_set_group_ids.append(psg_id)
+                else:
+                    permission_set_ids.append(psa['PermissionSetId'])
             print(f"  Found {len(permission_set_group_ids)} permission set groups")
+            print(f"  Found {len(permission_set_ids)} individual permission sets")
         except Exception as e:
-            # PermissionSetGroupAssignment may not be available
-            pass
+            print(f"  WARNING: Could not get permission sets: {str(e)}")
         
         return {
             'Profile': mimic_user.get('Profile', ''),
@@ -642,7 +640,7 @@ class SalesforceUserProvisioner:
                     'PermissionSetGroupId': psg_id
                 }
                 self.sf.restful(
-                    'sobjects/PermissionSetGroupAssignment/',
+                    'sobjects/PermissionSetAssignment/',
                     method='POST',
                     json=assignment
                 )
