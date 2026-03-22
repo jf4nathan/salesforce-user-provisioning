@@ -110,6 +110,20 @@ sf data query --query "SELECT Id, FirstName, LastName, Email FROM User WHERE (Fi
    - If manager wasn't assigned, manually update in Salesforce UI
 6. **Reset password**: Manually reset password in Salesforce UI
 
+## CSV column alignment (MimicUser rows)
+
+When `Profile` and `Role` are left empty and `MimicUser` supplies them, each column still needs its comma. An **extra** comma before `TimeZone` shifts the timezone value into `MimicUser` (for example: error that mimic user `America/New_York` was not found).
+
+**Header (10 columns):** `FirstName,LastName,Email,Username,Title,ManagerEmail,Profile,Role,TimeZone,MimicUser`
+
+**Example — Profile and Role empty, TimeZone and MimicUser set:**
+
+`Sadie,Bunderson,sadie.bunderson@mavenclinic.com,,Benefit Design Manager,caitlin.ardrey@mavenclinic.com,,,America/New_York,valerie.ward@mavenclinic.com`
+
+There are **three** commas immediately after `ManagerEmail` when both Profile and Role are blank: `manager@...,,,America/New_York,...` — not four.
+
+**Sanity check before running:** Confirm the row has exactly 10 fields (for example a quick script or spreadsheet column preview). If `MimicUser` looks like a timezone or an email is in the wrong column, fix commas first.
+
 ## Environment Confirmation and Production Safety
 
 Before any provisioning/deprovisioning action:

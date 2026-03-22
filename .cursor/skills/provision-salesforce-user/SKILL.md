@@ -85,6 +85,8 @@ FirstName,LastName,Email,Username,Title,ManagerEmail,Profile,Role,TimeZone,Mimic
 ,,new.user@mavenclinic.com,new.user@mavenclinic.com,,,,,eddie.tang@mavenclinic.com
 ```
 
+**MimicUser comma trap:** With empty `Profile` and `Role`, there must be exactly **three** commas after `ManagerEmail` before `TimeZone` (`manager@...,,,America/New_York,mimic@...`). A fourth comma shifts `TimeZone` into `MimicUser` and produces errors like mimic user `America/New_York` not found. Confirm 10 columns before running.
+
 ### Step 2: Run Provisioning
 
 **Using guardrail wrapper (recommended):**
