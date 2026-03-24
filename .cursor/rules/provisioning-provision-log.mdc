@@ -10,7 +10,7 @@ Provisioning runs must append an entry to the audit log, mirroring the deprovisi
 
 ## Log File
 
-- **Path**: `temp/provision_log.json` (configurable via `--log-file`)
+- **Path**: `provision_log.json` at project root (configurable via `--log-file`)
 - **Order**: Latest at top (processed date descending) — use `insert(0, entry)`
 
 ## Entry Format

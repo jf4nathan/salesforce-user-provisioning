@@ -14,7 +14,7 @@ When deprovisioning a Salesforce user, follow this workflow:
 3. **Deprovision**: Run deprovisioning script
 4. **Verify**: Check results JSON
 5. **Deprovision from QA/Staging**: Check and deactivate the same user in lower environments
-6. **Log every request**: Every deprovision request must be logged to `temp/deprovision_log.json` — the script does this automatically when run. If the user is **not found in any org** (before running the script), run `--log-only` to record the request.
+6. **Log every request**: Every deprovision request must be logged to `deprovision_log.json` (project root) — the script does this automatically when run. If the user is **not found in any org** (before running the script), run `--log-only` to record the request.
 
 ## Key Concepts
 
@@ -143,7 +143,7 @@ For each user:
 | `--dry-run` | No | Preview changes without executing |
 | `--skip-confirmation` | No | Skip per-user confirmation prompts |
 | `--output` | No | Output file (default: `temp/deprovisioning_results.json`) |
-| `--log-file` | No | Audit log file (default: `temp/deprovision_log.json`) |
+| `--log-file` | No | Audit log file (default: `deprovision_log.json` at project root) |
 | `--log-only` | No | Only write to audit log, no SF connection (use when user not found in any org) |
 
 ## User Not Found
@@ -196,7 +196,7 @@ When `--skip-confirmation` is used and multiple users match a name, the script *
 
 ## Deprovision Audit Log
 
-All deprovision requests are recorded in `temp/deprovision_log.json`:
+All deprovision requests are recorded in `deprovision_log.json` (project root):
 
 - **When the script runs** — automatically appends an entry (success, failed, skipped)
 - **When user not found in any org** — run with `--log-only` to record the request:

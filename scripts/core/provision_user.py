@@ -1250,8 +1250,8 @@ CSV Format:
                        help='Permission set assignment threshold (0.0-1.0, default: 0.5)')
     parser.add_argument('--output', default='temp/provisioning_results.json',
                        help='Output file for results (default: temp/provisioning_results.json)')
-    parser.add_argument('--log-file', default='temp/provision_log.json',
-                       help='Audit log file (default: temp/provision_log.json)')
+    parser.add_argument('--log-file', default='provision_log.json',
+                       help='Audit log file (default: provision_log.json)')
     add_jira_args(parser)
     
     args = parser.parse_args()

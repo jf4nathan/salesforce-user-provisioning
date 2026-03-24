@@ -514,8 +514,8 @@ CSV Format (either format works):
                         help='Only write to audit log (no SF connection). Use when user not found in any org.')
     parser.add_argument('--output', default='temp/deprovisioning_results.json',
                         help='Output file for results (default: temp/deprovisioning_results.json)')
-    parser.add_argument('--log-file', default='temp/deprovision_log.json',
-                        help='Audit log file (default: temp/deprovision_log.json)')
+    parser.add_argument('--log-file', default='deprovision_log.json',
+                        help='Audit log file (default: deprovision_log.json)')
 
     args = parser.parse_args()
 

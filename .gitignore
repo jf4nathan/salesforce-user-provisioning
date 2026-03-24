@@ -8,6 +8,10 @@ provisioning_results.json
 provisioning_results_*.json
 provisioning_results.json.backup
 
+# Provision/deprovision audit logs at project root (sensitive / high-churn)
+deprovision_log.json
+provision_log.json
+
 # User backup files (contain sensitive user permission data)
 user_backup_*.json
 
